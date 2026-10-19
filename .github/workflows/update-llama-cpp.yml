@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   update:
+    if: github.repository == 'utilityai/llama-cpp-rs'
     runs-on: ubuntu-latest
     name: Update llama cpp
     steps:

@@ -8,6 +8,9 @@ use cmake::Config;
 use glob::glob;
 use walkdir::DirEntry;
 
+#[path = "build_support/external.rs"]
+mod external;
+
 enum WindowsVariant {
     Msvc,
     Other,
@@ -390,6 +393,20 @@ fn is_hidden(e: &DirEntry) -> bool {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build_support/external.rs");
+    println!("cargo:rerun-if-env-changed=LLAMA_CPP_BUILD_MODE");
+    println!("cargo:rerun-if-env-changed=LLAMA_CPP_RUNTIME_DIR");
+    match env::var("LLAMA_CPP_BUILD_MODE").as_deref() {
+        Ok("external") => {
+            external::build().unwrap_or_else(|error| panic!("external llama.cpp runtime: {error}"));
+            return;
+        }
+        Ok("source") | Err(env::VarError::NotPresent) => {
+            assert!(env::var_os("LLAMA_CPP_RUNTIME_DIR").is_none(),
+                "LLAMA_CPP_RUNTIME_DIR requires LLAMA_CPP_BUILD_MODE=external; refusing to silently build from source");
+        }
+        _ => panic!("LLAMA_CPP_BUILD_MODE must be source or external"),
+    }
 
     let (target_os, target_triple) =
         parse_target_os().unwrap_or_else(|t| panic!("Failed to parse target os {t}"));

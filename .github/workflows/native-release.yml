@@ -1,0 +1,310 @@
+name: Native runtime release
+
+on:
+  push:
+    branches: [prebuilt/0.1.154]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'zvec-ai/llama-cpp-rs'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: aarch64-apple-darwin, runner: macos-14}
+          - {target: x86_64-apple-darwin, runner: macos-15-intel}
+          - {target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm}
+          - {target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04}
+          - {target: x86_64-pc-windows-msvc, runner: windows-2022}
+    name: Build and CPU test ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          toolchain: '1.98.0'
+      - name: Configure conservative build parallelism
+        shell: node {0}
+        run: |
+          const os = require('node:os');
+          const fs = require('node:fs');
+          const cores = os.availableParallelism();
+          const memoryGiB = os.totalmem() / (1024 ** 3);
+          const jobs = Math.max(1, Math.min(cores, Math.floor(memoryGiB / 3), 8));
+          fs.appendFileSync(process.env.GITHUB_ENV,
+            `CARGO_BUILD_JOBS=${jobs}\nCMAKE_BUILD_PARALLEL_LEVEL=${jobs}\n`);
+          console.log(`cores=${cores}, RAM=${memoryGiB.toFixed(1)} GiB, jobs=${jobs}`);
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake ninja-build patchelf
+      - name: Install MSVC 14.38 for the CUDA 12 fallback
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = (& $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw 'Visual Studio 2022 C++ tools are missing' }
+          $compiler = "$vs/VC/Tools/MSVC/14.38.*/bin/Hostx64/x64/cl.exe"
+          if (-not (Test-Path $compiler)) {
+            $installer = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/setup.exe"
+            $result = Start-Process $installer -ArgumentList @('modify', '--installPath', "`"$vs`"", '--add', 'Microsoft.VisualStudio.Component.VC.14.38.17.8.x86.x64', '--quiet', '--norestart') -Wait -PassThru
+            if ($result.ExitCode -notin @(0, 3010)) { throw "MSVC installation failed: $($result.ExitCode)" }
+          }
+          if (-not (Test-Path $compiler)) { throw 'MSVC 14.38 is missing after installation' }
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+          vsversion: '2022'
+      - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
+        if: runner.os == 'Windows'
+        with:
+          cuda: '13.1.1'
+          method: network
+          sub-packages: '["nvcc", "nvvm", "crt", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+          use-local-cache: true
+      - name: Configure Windows CUDA 13 DLL lookup
+        if: runner.os == 'Windows'
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          root = Path(os.environ['CUDA_PATH'])
+          paths = [str(path) for path in (root / 'bin' / 'x64', root / 'bin') if path.is_dir()]
+          with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as output:
+              output.write('\n'.join(paths) + '\n')
+      - uses: actions/cache/restore@v5
+        id: native-cache
+        with:
+          path: |
+            ~/.cargo/registry/
+            target/native-build/
+          key: native-v1-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: native-v1-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}-
+      - name: Test packaging contract
+        run: python -m unittest discover -s native -p 'test_*.py' -v
+      - name: Build primary through the upstream Cargo build script
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
+        run: python native/runtime.py primary --target ${{ matrix.target }}
+      - name: Build Linux CUDA primary in the baseline pinned image
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          docker build -f native/Dockerfile -t llama-native-cuda13 .
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CARGO_BUILD_JOBS -e CMAKE_BUILD_PARALLEL_LEVEL \
+            llama-native-cuda13 python3 native/runtime.py primary --target x86_64-unknown-linux-gnu
+      - name: Build Linux CUDA 12.4 fallback only
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          docker build -f native/Dockerfile --build-arg CUDA_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:da6791294b0b04d7e65d87b7451d6f2390b4d36225ab0701ee7dfec5769829f5 -t llama-native-cuda12 .
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CMAKE_BUILD_PARALLEL_LEVEL \
+            llama-native-cuda12 python3 native/runtime.py fallback
+      - name: Restore output ownership
+        if: always() && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: sudo chown -R "$(id -u):$(id -g)" target
+      - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
+        if: runner.os == 'Windows'
+        with:
+          cuda: '12.4.1'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust"]'
+          use-local-cache: true
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+          vsversion: '2022'
+          toolset: '14.38'
+      - name: Build Windows CUDA 12.4 fallback only
+        if: runner.os == 'Windows'
+        run: python native/runtime.py fallback --cuda-root "$env:CUDA_PATH"
+      - uses: actions/cache/save@v5
+        if: always() && steps.native-cache.outputs.cache-primary-key != '' && steps.native-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/
+            target/native-build/
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+      - name: Package the complete SDK
+        run: python native/runtime.py package
+      - name: Extract the exact release archive
+        run: python native/unpack.py --artifacts target/dist --output target/relocated/bundle
+      - name: Rebuild a Rust consumer without bindgen or native compilation
+        run: python native/runtime.py external --bundle target/relocated/bundle --target-dir target/external-consumer
+      - uses: actions/cache@v5
+        with:
+          path: target/models/
+          key: native-embeddinggemma-q8-b5ce9d77
+      - name: Real CPU embedding from the relocated SDK
+        run: python native/e2e.py --bundle target/relocated/bundle --mode cpu
+      - name: Linux inference without any NVIDIA libraries installed
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" ubuntu:24.04 bash -euc '
+            apt-get update -qq && apt-get install -y --no-install-recommends python3 libstdc++6 >/dev/null
+            ldd /work/target/relocated/bundle/lib/libggml-cuda.so | grep -Eq "lib(cuda|cudart|cublas).*not found"
+            cd /work && python3 native/e2e.py --bundle target/relocated/bundle --mode cpu --logs target/evidence/no-cuda
+          '
+      - name: Audit dynamic dependencies
+        run: python native/audit.py --bundle target/relocated/bundle --logs target/evidence
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.target }}
+          path: target/dist/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc'
+        with:
+          name: probe-${{ matrix.target }}
+          path: target/relocated/probe/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: evidence-${{ matrix.target }}
+          path: target/evidence/
+          if-no-files-found: warn
+
+  cuda-linux:
+    needs: build
+    runs-on:
+      group: gpu-runners
+      labels: gpu-linux-t4
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-x86_64-unknown-linux-gnu
+          path: artifacts
+      - uses: actions/download-artifact@v8
+        with:
+          name: probe-x86_64-unknown-linux-gnu
+          path: target/relocated/probe
+      - run: |
+          python3 native/unpack.py --artifacts artifacts --output target/relocated/bundle
+          chmod +x target/relocated/probe/native-smoke
+      - uses: actions/cache@v5
+        with:
+          path: target/models/
+          key: native-embeddinggemma-q8-b5ce9d77
+      - name: Real CUDA 12 fallback and CUDA 13 primary offload
+        run: |
+          for pair in \
+            'cuda12 nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04@sha256:ac55d124da4882b497f732d8dfd9a702d5447a5f29d08d56da6f64f0a1eb34bc' \
+            'cuda13 nvidia/cuda:13.1.1-runtime-ubuntu24.04@sha256:12e26235ebe186000d71f8e457a9ad2aed6c0cb743a7935f0443bacef206aa34'; do
+            read -r mode image <<< "$pair"
+            docker run --rm --gpus all -v "$GITHUB_WORKSPACE:/work" "$image" bash -euc '
+              apt-get update -qq && apt-get install -y --no-install-recommends python3 curl ca-certificates >/dev/null
+              cd /work && python3 native/e2e.py --bundle target/relocated/bundle --mode "$1" --logs "target/gpu-evidence/$1"
+            ' bash "$mode"
+          done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gpu-evidence-linux
+          path: target/gpu-evidence/
+
+  cuda-windows:
+    needs: build
+    runs-on:
+      group: gpu-runners
+      labels: gpu-windows-t4
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Prepare the same ephemeral GPU driver as zg
+        shell: powershell
+        run: ./native/prepare-windows-driver.ps1 -DriverOnly
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-x86_64-pc-windows-msvc
+          path: artifacts
+      - uses: actions/download-artifact@v8
+        with:
+          name: probe-x86_64-pc-windows-msvc
+          path: target/relocated/probe
+      - run: python native/unpack.py --artifacts artifacts --output target/relocated/bundle
+      - uses: actions/cache@v5
+        with:
+          path: target/models/
+          key: native-embeddinggemma-q8-b5ce9d77
+      - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
+        with:
+          cuda: '12.8.1'
+          method: network
+          sub-packages: '["cudart", "cublas"]'
+          use-local-cache: true
+      - name: Verify fallback with CUDA 13 hidden
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "$env:CUDA_PATH/bin;" + (($env:PATH -split ';' | Where-Object {
+            $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'cublas64_13.dll'))
+          }) -join ';')
+          python native/e2e.py --bundle target/relocated/bundle --mode cuda12 --logs target/gpu-evidence/cuda12
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
+        with:
+          cuda: '13.1.1'
+          method: network
+          sub-packages: '["cudart", "cublas"]'
+          use-local-cache: true
+      - name: Verify CUDA 13 primary
+        shell: powershell
+        run: |
+          $env:PATH = "$env:CUDA_PATH/bin/x64;$env:CUDA_PATH/bin;$env:PATH"
+          python native/e2e.py --bundle target/relocated/bundle --mode cuda13 --logs target/gpu-evidence/cuda13
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gpu-evidence-windows
+          path: target/gpu-evidence/
+
+  release:
+    needs: [build, cuda-linux, cuda-windows]
+    if: github.ref == 'refs/heads/prebuilt/0.1.154'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: release
+          merge-multiple: true
+      - name: Publish only after all platform and GPU checks pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 native/publish.py --assets release
