@@ -10,6 +10,8 @@ use walkdir::DirEntry;
 
 #[path = "build_support/external.rs"]
 mod external;
+#[path = "build_support/automatic.rs"]
+mod automatic;
 
 enum WindowsVariant {
     Msvc,
@@ -394,19 +396,36 @@ fn is_hidden(e: &DirEntry) -> bool {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build_support/external.rs");
+    println!("cargo:rerun-if-changed=build_support/automatic.rs");
+    println!("cargo:rerun-if-changed=build_support/runtime-lock.json");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_BUILD_MODE");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_RUNTIME_DIR");
+    automatic::watch_environment().expect("native runtime configuration");
     match env::var("LLAMA_CPP_BUILD_MODE").as_deref() {
         Ok("external") => {
             external::build().unwrap_or_else(|error| panic!("external llama.cpp runtime: {error}"));
             return;
         }
-        Ok("source") | Err(env::VarError::NotPresent) => {
+        Ok("auto") | Ok("prebuilt") | Err(env::VarError::NotPresent) => {
+            assert!(env::var_os("LLAMA_CPP_RUNTIME_DIR").is_none(),
+                "LLAMA_CPP_RUNTIME_DIR requires LLAMA_CPP_BUILD_MODE=external");
+            if automatic::try_build(env::var("LLAMA_CPP_BUILD_MODE").as_deref() == Ok("prebuilt"))
+                .unwrap_or_else(|error| panic!("automatic llama.cpp runtime: {error}")) {
+                return;
+            }
+        }
+        Ok("source") => {
             assert!(env::var_os("LLAMA_CPP_RUNTIME_DIR").is_none(),
                 "LLAMA_CPP_RUNTIME_DIR requires LLAMA_CPP_BUILD_MODE=external; refusing to silently build from source");
         }
-        _ => panic!("LLAMA_CPP_BUILD_MODE must be source or external"),
+        _ => panic!("LLAMA_CPP_BUILD_MODE must be auto, prebuilt, source or external"),
     }
+
+    let source_configuration = automatic::prepare_source_configuration(
+        &PathBuf::from(env::var("OUT_DIR").unwrap()),
+        &external::enabled_features(),
+        &env::vars().collect(),
+    ).expect("source build configuration");
 
     let (target_os, target_triple) =
         parse_target_os().unwrap_or_else(|t| panic!("Failed to parse target os {t}"));
@@ -1090,6 +1109,7 @@ fn main() {
         .always_configure(false);
 
     let build_dir = config.build();
+    source_configuration.commit().expect("record source build configuration");
 
     if cfg!(feature = "dynamic-backends") {
         println!("cargo:backends_dir={}", out_dir.join("backends").display());

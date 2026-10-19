@@ -4,6 +4,14 @@
 #[path = "../../../llama-cpp-sys-2/build_support/external.rs"]
 mod external_contract;
 #[cfg(test)]
+use external_contract as external;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../llama-cpp-sys-2/build_support/automatic.rs"]
+mod automatic_contract;
+#[cfg(test)]
+mod automatic_tests;
+#[cfg(test)]
 fn macos_link_search_path() -> Option<String> {
     None
 }

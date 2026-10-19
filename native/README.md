@@ -1,15 +1,17 @@
 # Versioned native runtime SDK
 
 This is a minimal fork of upstream tag `0.1.154`. `llama-cpp-2`'s safe API and
-the source-build implementation are unchanged. `llama-cpp-sys-2/build.rs` gains
-an offline, fail-closed external mode. No crates.io packages are published.
+the native source-build flags are unchanged. `llama-cpp-sys-2/build.rs` gains
+automatic prebuilt SDK selection and an explicit offline external mode.
+No crates.io packages are published.
 
 ## Baseline and supported configurations
 
 Baseline: `zvec-ai/zvec-grep`, branch `codex/cuda-static-linking`, commit
 `cc8fa72938db42b648687fccd99b088e94520186`.
 Native source: llama.cpp `5f55650a78f92aff4d48d671423e888fac0469ff`.
-Bundle release: `zvec-0.1.154-r1`; further changes require a new bundle revision.
+Bundle release: `zvec-0.1.154-r1`. Native ABI/configuration changes require a new
+bundle revision; bootstrap-only changes can reuse this pinned native SDK.
 
 | Rust target | Native linkage | sys features |
 | --- | --- | --- |
@@ -37,11 +39,44 @@ NVIDIA driver/runtime libraries are supplied by the deployment environment.
 
 ## Consumer contract
 
-Pin the fork Git commit and the matching `runtime-lock.json` archive/manifest
-digests in the consuming repository. Do not track a moving branch or fetch a
-remote checksums file as the source of trust on every build.
+Pin the fork Git commit in the consuming repository. Archive/manifest digests
+and native configuration are embedded in the sys crate's
+`build_support/runtime-lock.json`; consumers do not maintain a second lock file
+or build wrapper. Do not track a moving branch or fetch a remote checksums file
+as the source of trust on every build.
 
-Fetch once (Python 3.12+ and curl), then build offline:
+Ordinary `cargo build` and `cargo test` default to `LLAMA_CPP_BUILD_MODE=auto`:
+
+- Matching target, resolved sys features and native configuration download once
+  and reuse the SHA-256-pinned Release SDK, including generated bindings.
+- Native options that differ from the SDK select upstream's normal source
+  build and print the reason. Examples include a different CUDA architecture
+  list, enabling Vulkan/OpenMP, `GGML_CPU_REPACK=OFF`, `CXXFLAGS`, a lower macOS
+  deployment target, or `-C target-cpu=native`.
+- Normal Rust application changes, Rust debug/release profiles, logging and
+  `-C debuginfo=1` reuse the same Release native SDK. To request native Debug,
+  set `LLAMA_LIB_PROFILE=Debug` explicitly.
+- `LLAMA_CPP_BUILD_MODE=prebuilt` requires a match; `source` always compiles
+  from source. Unsupported targets/features use source mode in `auto`.
+- Download/integrity failures are errors, not silent source fallbacks.
+
+Source builds fingerprint native options and reconfigure CMake when they
+change. Successful configuration is recorded only after the native build
+completes, so failed attempts cannot reuse a partial cache as a valid one.
+
+The cache defaults to `$CARGO_HOME/llama-cpp-runtimes` (normally
+`~/.cargo/llama-cpp-runtimes`). `LLAMA_CPP_RUNTIME_CACHE` overrides its root.
+SDKs are locked during atomic population and reverified when selected.
+`LLAMA_CPP_RUNTIME_ARCHIVE=/path/to/pinned.tar.gz` can populate a cold cache
+without network access, with the same digest checks. Curl is needed only for a
+cold network download, not for an already-cached SDK.
+
+For offline builds set `CARGO_NET_OFFLINE=true` or `LLAMA_CPP_OFFLINE=1`; a cache
+miss then fails unless a local archive is supplied. Cargo's `--offline` flag
+alone is not exposed to dependency build scripts and cannot control their
+downloads. Existing explicit `external` mode below remains strictly offline.
+
+For fully manual external mode, fetch once (Python 3.12+ and curl), then build:
 
 ```sh
 python native/fetch.py --target aarch64-apple-darwin \
@@ -55,10 +90,9 @@ cargo build --locked
 The safe crate dependency must use `default-features = false`; enable `cuda`
 and `dynamic-backends` together on the two CUDA targets. Unsupported feature
 combinations, wrong target/version, source-build overrides, missing files,
-extra files, symlinks and hash failures are rejected. No source fallback and
-no network access occur in `build.rs`. Source mode remains the upstream default
-for compatibility and can be requested explicitly with
-`LLAMA_CPP_BUILD_MODE=source`; do not set the runtime directory in source mode.
+extra files, symlinks and hash failures are rejected in explicit external mode.
+That mode never downloads or falls back to source. Do not set the runtime
+directory when selecting automatic or source mode.
 
 Each archive contains per-target pre-generated `bindings.rs`, a `manifest.json`,
 native link/runtime libraries under `lib/`, and licenses. Generated bindings

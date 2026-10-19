@@ -13,6 +13,8 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 tempfile = "3"
+flate2 = "1"
+tar = "0.4"
 
 [features]
 cuda = ["llama-cpp-2/cuda", "llama-cpp-2/dynamic-backends"]

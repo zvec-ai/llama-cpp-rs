@@ -151,7 +151,7 @@ pub fn validate(root: &Path, target: &str, features: &BTreeSet<String>) -> Resul
     Ok(manifest)
 }
 
-fn enabled_features() -> BTreeSet<String> {
+pub(super) fn enabled_features() -> BTreeSet<String> {
     // These are the sys crate's native-affecting Cargo features. Keep in sync
     // with Cargo.toml; mismatches are errors, never source-build fallbacks.
     [
@@ -206,8 +206,19 @@ pub fn build() -> Result<()> {
             );
         }
     }
+    build_verified(&root, &expected)
+}
+
+// Auto mode already compared native options. Explicit external mode retains
+// its original strict, offline environment validation above.
+pub(super) fn build_verified(root: &Path, expected: &str) -> Result<()> {
+    let manifest_path = root.join("manifest.json");
+    println!("cargo:rerun-if-changed={}", manifest_path.display());
+    if sha256(&manifest_path)? != expected {
+        return Err("manifest SHA-256 mismatch".into());
+    }
     let features = enabled_features();
-    let manifest = validate(&root, &env::var("TARGET")?, &features)?;
+    let manifest = validate(root, &env::var("TARGET")?, &features)?;
     for file in manifest.files.keys() {
         println!("cargo:rerun-if-changed={}", root.join(file).display());
     }
