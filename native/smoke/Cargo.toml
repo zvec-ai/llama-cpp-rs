@@ -15,6 +15,7 @@ sha2 = "0.10"
 tempfile = "3"
 flate2 = "1"
 tar = "0.4"
+walkdir = "2"
 
 [features]
 cuda = ["llama-cpp-2/cuda", "llama-cpp-2/dynamic-backends"]

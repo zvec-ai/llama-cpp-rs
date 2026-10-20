@@ -4,11 +4,33 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 from fetch import extract
-from runtime import ARCH12, ARCH13, TARGETS, audit_cache, digest, verify, RELEASE, REVISION, recover_incomplete_cmake
+from runtime import ARCH12, ARCH13, TARGETS, audit_cache, digest, verify, RELEASE, REVISION, recover_incomplete_cmake, verify_source, source_from_build
+import hashlib
 
 
 class ContractTests(unittest.TestCase):
+    def test_source_metadata_and_tree_are_verified_without_git(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            source.mkdir()
+            (source / "CMakeLists.txt").write_bytes(b"fixture")
+            encoded = b"CMakeLists.txt"
+            expected = hashlib.sha256(len(encoded).to_bytes(8, "big") + encoded + digest(source / "CMakeLists.txt").encode()).hexdigest()
+            out = root / "build/out"
+            out.mkdir(parents=True)
+            (out.parent / "output").write_text(f"cargo:source_dir={source}\ncargo:source_revision={REVISION}\n")
+            with patch("runtime.SOURCE_LOCK", {"tree_sha256": expected}):
+                self.assertEqual(source_from_build(out), source)
+                (source / "CMakeLists.txt").write_bytes(b"modified")
+                with self.assertRaisesRegex(RuntimeError, "source tree mismatch"):
+                    verify_source(source)
+            (out.parent / "output").write_text("cargo:source_revision=wrong\n")
+            with self.assertRaisesRegex(RuntimeError, "locked source"):
+                source_from_build(out)
+
     def test_only_two_cuda_targets(self):
         self.assertEqual({target for target, features in TARGETS.items() if "cuda" in features},
                          {"x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"})

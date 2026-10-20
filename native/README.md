@@ -3,6 +3,8 @@
 This is a minimal fork of upstream tag `0.1.154`. `llama-cpp-2`'s safe API and
 the native source-build flags are unchanged. `llama-cpp-sys-2/build.rs` gains
 automatic prebuilt SDK selection and an explicit offline external mode.
+Git consumers do not fetch a llama.cpp submodule. Only a selected source build
+resolves native source, pinned separately in `build_support/source-lock.json`.
 No crates.io packages are published.
 
 ## Baseline and supported configurations
@@ -76,6 +78,51 @@ miss then fails unless a local archive is supplied. Cargo's `--offline` flag
 alone is not exposed to dependency build scripts and cannot control their
 downloads. Existing explicit `external` mode below remains strictly offline.
 
+### On-demand native source
+
+The fork has no `.gitmodules` entry or gitlink for llama.cpp, so Cargo's Git
+dependency acquisition does not download native source before `build.rs` runs.
+`prebuilt`, matching `auto`, and `external` never resolve source, even on a
+cold Cargo Git cache. A failed SDK download/checksum remains an error and does
+not trigger source acquisition.
+
+Only `source` or a real native-option mismatch in `auto` reaches the source
+resolver. It verifies the exact revision above using both a pinned GitHub
+codeload archive SHA-256 and a deterministic full file-tree SHA-256. It never
+checks out a branch, initializes a submodule, changes an existing Git checkout,
+or updates global Git configuration.
+
+Source-only controls (ignored when an SDK is selected):
+
+- `LLAMA_CPP_SOURCE_DIR`: use an existing byte-identical pinned source tree,
+  read-only, without needing curl or Git. Root `.git` metadata is ignored, but
+  modified/extra source files, symlinks and converted line endings are rejected.
+- `LLAMA_CPP_SOURCE_CACHE`: content-addressed cache root, defaulting to
+  `$CARGO_HOME/llama-cpp-sources` (normally `~/.cargo/llama-cpp-sources`). Warm
+  entries are reverified; concurrent cold fetches are locked and installed
+  atomically. Corrupt entries or injected Git metadata are errors, not silently
+  replaced. Directory membership and all pinned files participate in Cargo's
+  freshness checks, including newly added files and vendor headers.
+- `LLAMA_CPP_SOURCE_ARCHIVE`: populate a cold source cache from the exact pinned
+  `.tar.gz`, with the same archive and extracted-tree checks, without network.
+
+With no explicit source directory, a warm cache is preferred. An existing
+legacy `llama-cpp-sys-2/llama.cpp` checkout is also reusable if clean and exactly
+pinned; this ignored directory is preserved, not managed by Cargo. An explicit
+source archive bypasses a legacy checkout, so it can be used without modifying
+dirty local source. Otherwise the source archive is downloaded once, only when
+a source build is needed.
+Source archives are not bundled into the sys crate's package.
+
+`LLAMA_CPP_OFFLINE=1` or `CARGO_NET_OFFLINE=true` prohibits both SDK and source
+downloads. Existing verified caches, source directories or supplied archives
+still work. A cold source miss reports the required revision and ways to seed
+it offline. Cargo's `--offline` alone does not govern build-script networking.
+Source builds still require the platform's bindgen/CMake/C++/CUDA toolchain.
+`DEP_LLAMA_SOURCE_DIR` and `DEP_LLAMA_SOURCE_REVISION` identify the actual source
+chosen by the sys build script. Changing its resolved location reconfigures
+CMake rather than reusing a cache tied to the previous source path.
+
 For fully manual external mode, fetch once (Python 3.12+ and curl), then build:
 
 ```sh
@@ -142,8 +189,25 @@ not claim every CUDA architecture was executed (hardware verification is T4).
 The release job publishes all five SDKs, per-target manifests, `SHA256SUMS` and
 `runtime-lock.json`. Existing releases/assets are never overwritten. Upstream
 crate publishing and automated update workflows are guarded to upstream's repo
-and disabled in this fork. `main`, imported tags and the native submodule are
-not modified. zg integration is a separate acceptance-gated step.
+and disabled in this fork. `main`, imported tags and published SDKs are not
+modified. This branch removes the submodule registration while retaining the
+same native revision/ABI. zg integration is a separate acceptance-gated step.
 
 Local entry points: `python native/runtime.py --help`, `python native/e2e.py
 --help`; unit tests: `python -m unittest discover -s native -p 'test_*.py' -v`.
+
+An opt-in macOS ARM64 verification uses a disposable Git snapshot and a genuinely
+empty Cargo Home (not a path dependency). It guards native Git/source downloads,
+CMake and bindgen, tests SDK failures without source fallback, then performs an
+on-demand source build, offline reuse, real CPU/Metal inference and cache-tamper
+checks. It never commits the working branch, pushes, publishes or dispatches CI:
+
+```sh
+python native/verify_lazy_source.py \
+  --sdk-archive /absolute/path/to/pinned-macos-sdk.tar.gz \
+  --model /absolute/path/to/embeddinggemma-300M-Q8_0.gguf
+```
+
+Pass `--source-archive /absolute/path/to/pinned-source.tar.gz` to avoid the source
+network download in this opt-in test. Logs/report stay under `target/lazy-source-*`.
+Other platform/backend execution must be verified separately.

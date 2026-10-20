@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify versioned native SDKs using the unchanged upstream source path.
-
-Only maintainer CI invokes the source build. Consumers select external mode and
-provide a locally extracted, checksum-pinned bundle; build.rs never downloads.
-"""
+"""Build and verify native SDKs through the sys crate's pinned source resolver."""
 import argparse
 import hashlib
 import json
@@ -17,7 +13,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = "zvec-0.1.154-r1"
-REVISION = "5f55650a78f92aff4d48d671423e888fac0469ff"
+SOURCE_LOCK = json.loads((ROOT / "llama-cpp-sys-2/build_support/source-lock.json").read_text(encoding="utf-8"))
+REVISION = SOURCE_LOCK["revision"]
 ARCH13 = "75-real;80-real;86-real;89-real;90-real;90-virtual"
 ARCH12 = "50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real"
 TARGETS = {
@@ -125,14 +122,51 @@ def recover_incomplete_cmake(target_dir, target):
             cache.replace(cache.with_suffix(".txt.incomplete"))
 
 
+def verify_source(root):
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir():
+        raise RuntimeError(f"Invalid pinned source directory: {root}")
+    files = {}
+    for directory, subdirectories, names in os.walk(root):
+        directory = Path(directory)
+        if directory == root:
+            subdirectories[:] = [name for name in subdirectories if name != ".git"]
+            names = [name for name in names if name != ".git"]
+        for name in subdirectories:
+            if (directory / name).is_symlink():
+                raise RuntimeError("Symlink in pinned source tree")
+        for name in names:
+            path = directory / name
+            if path.is_symlink() or not path.is_file():
+                raise RuntimeError(f"Invalid pinned source file: {path}")
+            files[path.relative_to(root).as_posix()] = digest(path)
+    tree = hashlib.sha256()
+    for name, value in sorted(files.items()):
+        encoded = name.encode("utf-8")
+        tree.update(len(encoded).to_bytes(8, "big"))
+        tree.update(encoded)
+        tree.update(value.encode("ascii"))
+    if tree.hexdigest() != SOURCE_LOCK["tree_sha256"]:
+        raise RuntimeError(f"Pinned llama.cpp {REVISION} source tree mismatch: {root}")
+    return root
+
+
+def source_from_build(out):
+    metadata = dict(line.removeprefix("cargo:").split("=", 1)
+                    for line in (out.parent / "output").read_text(encoding="utf-8").splitlines()
+                    if line.startswith(("cargo:source_dir=", "cargo:source_revision=")))
+    if metadata.get("source_revision") != REVISION or not metadata.get("source_dir"):
+        raise RuntimeError("Primary build did not report the locked source revision/directory")
+    return verify_source(metadata["source_dir"])
+
+
 def primary(target, output, target_dir):
     if output.exists():
         raise RuntimeError(f"Refusing to overwrite existing bundle: {output}")
-    actual = subprocess.check_output(["git", "-C", str(ROOT / "llama-cpp-sys-2/llama.cpp"), "rev-parse", "HEAD"], text=True).strip()
-    if actual != REVISION:
-        raise RuntimeError(f"llama.cpp revision mismatch: {actual}")
     env = os.environ.copy()
     env["LLAMA_CPP_BUILD_MODE"] = "source"
+    # The two Linux containers share /work/target, not /root/.cargo.
+    env.setdefault("LLAMA_CPP_SOURCE_CACHE", str(ROOT / "target/native-source"))
     env.pop("LLAMA_CPP_RUNTIME_DIR", None)
     if "cuda" in TARGETS[target]:
         nvcc = subprocess.check_output(["nvcc", "--version"], text=True)
@@ -143,6 +177,8 @@ def primary(target, output, target_dir):
         env["MACOSX_DEPLOYMENT_TARGET"] = "14.0"
     recover_incomplete_cmake(target_dir, target)
     out, _ = cargo_build(target, target_dir, env)
+    source_root = source_from_build(out)
+    write_json(target_dir / "source-root.json", {"revision": REVISION, "path": str(source_root)})
     cache = audit_cache(cache_entries(out / "build/CMakeCache.txt"), target)
     # Cargo reports exactly this build's OUT_DIR. Never select by newest glob.
     libraries = []
@@ -164,10 +200,10 @@ def primary(target, output, target_dir):
         for path in sorted((output / "lib").glob("*.so*")):
             run(["patchelf", "--set-rpath", "$ORIGIN", path])
     copy_file(out / "bindings.rs", output / "bindings.rs")
-    for name, source in {"llama.cpp-MIT": ROOT / "llama-cpp-sys-2/llama.cpp/LICENSE",
+    for name, source in {"llama.cpp-MIT": source_root / "LICENSE",
                          "llama-cpp-rs-MIT": ROOT / "LICENSE-MIT", "llama-cpp-rs-APACHE": ROOT / "LICENSE-APACHE",
-                         "jsonhpp-MIT": ROOT / "llama-cpp-sys-2/llama.cpp/licenses/LICENSE-jsonhpp",
-                         "cpp-httplib-MIT": ROOT / "llama-cpp-sys-2/llama.cpp/vendor/cpp-httplib/LICENSE"}.items():
+                         "jsonhpp-MIT": source_root / "licenses/LICENSE-jsonhpp",
+                         "cpp-httplib-MIT": source_root / "vendor/cpp-httplib/LICENSE"}.items():
         copy_file(source, output / "licenses" / name)
     manifest = {"schema": 1, "release": RELEASE, "crate_version": "0.1.154",
                 "llama_cpp_revision": REVISION, "target": target, "features": TARGETS[target],
@@ -185,12 +221,18 @@ def fallback(output, target_dir, cuda_root):
     target = manifest["target"]
     if "cuda" not in TARGETS[target]:
         raise RuntimeError("Fallback only exists on the two x64 CUDA targets")
+    if not (target_dir / "source-root.json").is_file():
+        raise RuntimeError("Fallback source record is missing; run primary first")
+    source_record = read_json(target_dir / "source-root.json")
+    if source_record.get("revision") != REVISION:
+        raise RuntimeError("Fallback requires primary's matching pinned source; run primary first")
+    source = verify_source(source_record["path"])
     nvcc = cuda_root / "bin" / ("nvcc.exe" if os.name == "nt" else "nvcc")
     version = subprocess.check_output([str(nvcc), "--version"], text=True)
     if "release 12.4," not in version:
         raise RuntimeError("Fallback plugin requires CUDA 12.4")
     build = target_dir / "cuda12"
-    command = ["cmake", "-S", ROOT / "llama-cpp-sys-2/llama.cpp", "-B", build, "-G", "Ninja",
+    command = ["cmake", "-S", source, "-B", build, "-G", "Ninja",
                "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DGGML_BACKEND_DL=ON",
                "-DGGML_NATIVE=OFF", "-DGGML_CPU=OFF", "-DGGML_CUDA=ON", "-DGGML_CUDA_NCCL=OFF",
                "-DGGML_OPENMP=OFF", "-DLLAMA_BUILD_TESTS=OFF", "-DLLAMA_BUILD_EXAMPLES=OFF",
@@ -199,7 +241,9 @@ def fallback(output, target_dir, cuda_root):
                f"-DCUDAToolkit_ROOT={cuda_root}", f"-DCMAKE_CUDA_ARCHITECTURES={ARCH12}"]
     if os.name == "nt":
         command += ["-DCMAKE_C_COMPILER=cl", "-DCMAKE_CXX_COMPILER=cl", "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"]
-    run(command)
+    source_env = os.environ.copy()
+    source_env["GIT_CEILING_DIRECTORIES"] = str(source.parent)
+    run(command, env=source_env)
     run(["cmake", "--build", build, "--config", "Release", "--target", "ggml-cuda",
          "--parallel", os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "2")])
     filename = "ggml-cuda.dll" if os.name == "nt" else "libggml-cuda.so"

@@ -12,6 +12,8 @@ use walkdir::DirEntry;
 mod external;
 #[path = "build_support/automatic.rs"]
 mod automatic;
+#[path = "build_support/source.rs"]
+mod source;
 
 enum WindowsVariant {
     Msvc,
@@ -398,6 +400,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build_support/external.rs");
     println!("cargo:rerun-if-changed=build_support/automatic.rs");
     println!("cargo:rerun-if-changed=build_support/runtime-lock.json");
+    println!("cargo:rerun-if-changed=build_support/source.rs");
+    println!("cargo:rerun-if-changed=build_support/source-lock.json");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_BUILD_MODE");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_RUNTIME_DIR");
     automatic::watch_environment().expect("native runtime configuration");
@@ -421,19 +425,20 @@ fn main() {
         _ => panic!("LLAMA_CPP_BUILD_MODE must be auto, prebuilt, source or external"),
     }
 
-    let source_configuration = automatic::prepare_source_configuration(
-        &PathBuf::from(env::var("OUT_DIR").unwrap()),
-        &external::enabled_features(),
-        &env::vars().collect(),
-    ).expect("source build configuration");
-
     let (target_os, target_triple) =
         parse_target_os().unwrap_or_else(|t| panic!("Failed to parse target os {t}"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let target_dir = get_cargo_target_dir().unwrap();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("Failed to get CARGO_MANIFEST_DIR");
-    let llama_src = Path::new(&manifest_dir).join("llama.cpp");
+    let llama_src = source::resolve()
+        .unwrap_or_else(|error| panic!("pinned llama.cpp source: {error}"));
+    let source_configuration = automatic::prepare_source_configuration(
+        &out_dir,
+        &external::enabled_features(),
+        &env::vars().collect(),
+        &llama_src,
+    ).expect("source build configuration");
     let build_shared_libs = cfg!(feature = "dynamic-link");
 
     let build_shared_libs = std::env::var("LLAMA_BUILD_SHARED_LIBS")
@@ -518,6 +523,7 @@ fn main() {
     if cfg!(feature = "mtmd") {
         bindings_builder = bindings_builder
             .header("wrapper_mtmd.h")
+            .clang_arg(format!("-I{}", llama_src.join("tools/mtmd").display()))
             .allowlist_function("mtmd_.*")
             .allowlist_type("mtmd_.*");
     }
@@ -678,6 +684,9 @@ fn main() {
     // Build with Cmake
 
     let mut config = Config::new(&llama_src);
+    // Archive caches may live below the fork checkout. Do not report the
+    // fork's Git revision as the native source's build metadata.
+    config.env("GIT_CEILING_DIRECTORIES", llama_src.parent().unwrap());
 
     // Would require extra source files to pointlessly
     // be included in what's uploaded to and downloaded from

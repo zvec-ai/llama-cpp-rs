@@ -10,6 +10,14 @@ use external_contract as external;
 #[path = "../../../llama-cpp-sys-2/build_support/automatic.rs"]
 mod automatic_contract;
 #[cfg(test)]
+use automatic_contract as automatic;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../llama-cpp-sys-2/build_support/source.rs"]
+mod source_contract;
+#[cfg(test)]
+mod source_tests;
+#[cfg(test)]
 mod automatic_tests;
 #[cfg(test)]
 fn macos_link_search_path() -> Option<String> {

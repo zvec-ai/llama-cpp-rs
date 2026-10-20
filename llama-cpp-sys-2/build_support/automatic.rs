@@ -93,6 +93,9 @@ const OTHER_OPTIONS: &[&str] = &[
     "LLAMA_CPP_RUNTIME_CACHE",
     "LLAMA_CPP_RUNTIME_ARCHIVE",
     "LLAMA_CPP_OFFLINE",
+    "LLAMA_CPP_SOURCE_CACHE",
+    "LLAMA_CPP_SOURCE_DIR",
+    "LLAMA_CPP_SOURCE_ARCHIVE",
     "CARGO_NET_OFFLINE",
     "CARGO_HOME",
     "HOME",
@@ -384,6 +387,12 @@ fn cache_directory() -> Result<PathBuf> {
     Ok(cargo_home.join("llama-cpp-runtimes"))
 }
 
+pub fn offline() -> bool {
+    ["LLAMA_CPP_OFFLINE", "CARGO_NET_OFFLINE"]
+        .iter()
+        .any(|name| env::var(name).ok().as_deref().and_then(boolean) == Some(true))
+}
+
 pub fn try_build(prebuilt_only: bool) -> Result<bool> {
     let lock = runtime_lock()?;
     let target = env::var("TARGET")?;
@@ -404,9 +413,6 @@ pub fn try_build(prebuilt_only: bool) -> Result<bool> {
         );
         return Ok(false);
     }
-    let offline = ["LLAMA_CPP_OFFLINE", "CARGO_NET_OFFLINE"]
-        .iter()
-        .any(|name| env::var(name).ok().as_deref().and_then(boolean) == Some(true));
     let archive = env::var_os("LLAMA_CPP_RUNTIME_ARCHIVE").map(PathBuf::from);
     if let Some(archive) = &archive {
         println!("cargo:rerun-if-changed={}", archive.display());
@@ -416,7 +422,7 @@ pub fn try_build(prebuilt_only: bool) -> Result<bool> {
         &target,
         &cache_directory()?,
         archive.as_deref(),
-        offline,
+        offline(),
     )?;
     external::build_verified(&root, &bundle.unwrap().manifest_sha256)?;
     Ok(true)
@@ -440,6 +446,7 @@ pub fn prepare_source_configuration(
     out: &Path,
     features: &BTreeSet<String>,
     variables: &BTreeMap<String, String>,
+    source: &Path,
 ) -> Result<SourceConfiguration> {
     let native: BTreeMap<_, _> = variables
         .iter()
@@ -464,7 +471,12 @@ pub fn prepare_source_configuration(
         .collect();
     let fingerprint = format!(
         "{:x}",
-        Sha256::digest(serde_json::to_vec(&(features, native))?)
+        Sha256::digest(serde_json::to_vec(&(
+            features,
+            native,
+            source,
+            include_str!("source-lock.json")
+        ))?)
     );
     fs::create_dir_all(out)?;
     let path = out.join("llama-source-config.sha256");

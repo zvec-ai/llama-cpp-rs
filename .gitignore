@@ -10,3 +10,5 @@ target/
 *.pdb
 __pycache__/
 *.pyc
+# Preserve legacy/manual source checkouts without making Cargo fetch a submodule.
+/llama-cpp-sys-2/llama.cpp/

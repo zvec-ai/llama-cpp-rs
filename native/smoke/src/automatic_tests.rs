@@ -66,6 +66,9 @@ fn rust_application_options_and_profiles_reuse_release_native_sdk() {
         ("CARGO_ENCODED_RUSTFLAGS", "-C\u{1f}debuginfo=1"),
         ("CARGO_PROFILE_RELEASE_DEBUG", "true"),
         ("RUST_LOG", "debug"),
+        ("LLAMA_CPP_SOURCE_DIR", "/not-needed-for-sdk"),
+        ("LLAMA_CPP_SOURCE_CACHE", "/not-needed-for-sdk"),
+        ("LLAMA_CPP_SOURCE_ARCHIVE", "/not-needed-for-sdk"),
     ]);
     assert!(automatic::mismatches(bundle, &mac_features(), &values).is_empty());
     for flag in [
@@ -230,22 +233,32 @@ fn source_cache_reconfigures_on_option_changes_and_failed_attempts() {
     fs::write(&cache, b"old cache").unwrap();
     fs::write(build.join("cmake_install.cmake"), b"install").unwrap();
     let before = variables(&[("GGML_CPU_REPACK", "OFF")]);
-    let first = automatic::prepare_source_configuration(out, &mac_features(), &before).unwrap();
+    let first =
+        automatic::prepare_source_configuration(out, &mac_features(), &before, out).unwrap();
     assert!(!cache.exists());
     assert_eq!(fs::read(&object).unwrap(), b"object");
     fs::write(&cache, b"configured OFF").unwrap();
     first.commit().unwrap();
-    automatic::prepare_source_configuration(out, &mac_features(), &before).unwrap();
+    automatic::prepare_source_configuration(out, &mac_features(), &before, out).unwrap();
     assert!(cache.exists());
     let after = variables(&[("GGML_CPU_REPACK", "ON")]);
-    automatic::prepare_source_configuration(out, &mac_features(), &after).unwrap();
+    automatic::prepare_source_configuration(out, &mac_features(), &after, out).unwrap();
     assert!(!cache.exists());
     // Simulate a failed attempt that left a partial cache but never committed.
     fs::write(&cache, b"partial new cache").unwrap();
-    let retry = automatic::prepare_source_configuration(out, &mac_features(), &after).unwrap();
+    let retry = automatic::prepare_source_configuration(out, &mac_features(), &after, out).unwrap();
     assert!(!cache.exists());
     fs::write(&cache, b"configured ON").unwrap();
     retry.commit().unwrap();
-    automatic::prepare_source_configuration(out, &mac_features(), &after).unwrap();
+    automatic::prepare_source_configuration(out, &mac_features(), &after, out).unwrap();
     assert!(cache.exists());
+    // Identical options with a different resolved source must also reconfigure.
+    automatic::prepare_source_configuration(
+        out,
+        &mac_features(),
+        &after,
+        &out.join("other-source"),
+    )
+    .unwrap();
+    assert!(!cache.exists());
 }
