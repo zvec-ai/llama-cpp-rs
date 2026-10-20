@@ -2,6 +2,16 @@ name: Native runtime release
 
 on:
   workflow_dispatch:
+    inputs:
+      variant:
+        description: Original five SDKs, or only the two additional CPU SDKs
+        type: choice
+        options: [default, cpu]
+        default: default
+      publish_cpu:
+        description: Publish the CPU release after native checks (otherwise prepare hashes only)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -16,12 +26,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {target: aarch64-apple-darwin, runner: macos-14}
-          - {target: x86_64-apple-darwin, runner: macos-15-intel}
-          - {target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm}
-          - {target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04}
-          - {target: x86_64-pc-windows-msvc, runner: windows-2022}
+        include: >-
+          ${{ fromJSON(inputs.variant == 'cpu' &&
+          '[{"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04"},
+          {"target":"x86_64-pc-windows-msvc","runner":"windows-2022"}]' ||
+          '[{"target":"aarch64-apple-darwin","runner":"macos-14"},
+          {"target":"x86_64-apple-darwin","runner":"macos-15-intel"},
+          {"target":"aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm"},
+          {"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04"},
+          {"target":"x86_64-pc-windows-msvc","runner":"windows-2022"}]') }}
     name: Build and CPU test ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
@@ -51,7 +64,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake ninja-build patchelf
       - name: Install MSVC 14.38 for the CUDA 12 fallback
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.variant != 'cpu'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -71,14 +84,14 @@ jobs:
           arch: x64
           vsversion: '2022'
       - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.variant != 'cpu'
         with:
           cuda: '13.1.1'
           method: network
           sub-packages: '["nvcc", "nvvm", "crt", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
           use-local-cache: true
       - name: Configure Windows CUDA 13 DLL lookup
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.variant != 'cpu'
         shell: python
         run: |
           import os
@@ -93,43 +106,43 @@ jobs:
           path: |
             ~/.cargo/registry/
             target/native-build/
-          key: native-v1-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
-          restore-keys: native-v1-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}-
+          key: ${{ inputs.variant == 'cpu' && 'native-cpu-v1' || 'native-v1' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: ${{ inputs.variant == 'cpu' && 'native-cpu-v1' || 'native-v1' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}-
       - name: Test packaging contract
         run: python -m unittest discover -s native -p 'test_*.py' -v
       - name: Build primary through the upstream Cargo build script
-        if: matrix.target != 'x86_64-unknown-linux-gnu'
-        run: python native/runtime.py primary --target ${{ matrix.target }}
+        if: matrix.target != 'x86_64-unknown-linux-gnu' || inputs.variant == 'cpu'
+        run: python native/runtime.py primary --target ${{ matrix.target }} --variant ${{ inputs.variant }}
       - name: Build Linux CUDA primary in the baseline pinned image
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu'
         run: |
           docker build -f native/Dockerfile -t llama-native-cuda13 .
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CARGO_BUILD_JOBS -e CMAKE_BUILD_PARALLEL_LEVEL \
             llama-native-cuda13 python3 native/runtime.py primary --target x86_64-unknown-linux-gnu
       - name: Build Linux CUDA 12.4 fallback only
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu'
         run: |
           docker build -f native/Dockerfile --build-arg CUDA_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:da6791294b0b04d7e65d87b7451d6f2390b4d36225ab0701ee7dfec5769829f5 -t llama-native-cuda12 .
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CMAKE_BUILD_PARALLEL_LEVEL \
             llama-native-cuda12 python3 native/runtime.py fallback
       - name: Restore output ownership
-        if: always() && matrix.target == 'x86_64-unknown-linux-gnu'
+        if: always() && matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu'
         run: sudo chown -R "$(id -u):$(id -g)" target
       - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.variant != 'cpu'
         with:
           cuda: '12.4.1'
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust"]'
           use-local-cache: true
       - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.variant != 'cpu'
         with:
           arch: x64
           vsversion: '2022'
           toolset: '14.38'
       - name: Build Windows CUDA 12.4 fallback only
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.variant != 'cpu'
         run: python native/runtime.py fallback --cuda-root "$env:CUDA_PATH"
       - uses: actions/cache/save@v5
         if: always() && steps.native-cache.outputs.cache-primary-key != '' && steps.native-cache.outputs.cache-hit != 'true'
@@ -151,7 +164,7 @@ jobs:
       - name: Real CPU embedding from the relocated SDK
         run: python native/e2e.py --bundle target/relocated/bundle --mode cpu
       - name: Linux inference without any NVIDIA libraries installed
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu'
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" ubuntu:24.04 bash -euc '
             apt-get update -qq && apt-get install -y --no-install-recommends python3 libstdc++6 >/dev/null
@@ -168,7 +181,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@v7
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc'
+        if: inputs.variant != 'cpu' && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc')
         with:
           name: probe-${{ matrix.target }}
           path: target/relocated/probe/*
@@ -182,6 +195,7 @@ jobs:
 
   cuda-linux:
     needs: build
+    if: inputs.variant != 'cpu'
     runs-on:
       group: gpu-runners
       labels: gpu-linux-t4
@@ -227,6 +241,7 @@ jobs:
 
   cuda-windows:
     needs: build
+    if: inputs.variant != 'cpu'
     runs-on:
       group: gpu-runners
       labels: gpu-windows-t4
@@ -289,7 +304,10 @@ jobs:
 
   release:
     needs: [build, cuda-linux, cuda-windows]
-    if: github.ref == 'refs/heads/prebuilt/0.1.154'
+    if: >-
+      always() && !cancelled() && github.ref == 'refs/heads/prebuilt/0.1.154' &&
+      needs.build.result == 'success' &&
+      (inputs.variant == 'cpu' || (needs.cuda-linux.result == 'success' && needs.cuda-windows.result == 'success'))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -305,4 +323,12 @@ jobs:
       - name: Publish only after all platform and GPU checks pass
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 native/publish.py --assets release
+        run: python3 native/publish.py --assets release --variant ${{ inputs.variant }} ${{ inputs.variant == 'cpu' && !inputs.publish_cpu && '--prepare-only' || '' }}
+      - uses: actions/upload-artifact@v7
+        if: inputs.variant == 'cpu'
+        with:
+          name: cpu-release-metadata
+          path: |
+            release/cpu-runtime-lock.json
+            release/SHA256SUMS
+            release/release-notes.md

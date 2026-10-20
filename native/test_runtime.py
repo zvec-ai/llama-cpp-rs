@@ -5,12 +5,82 @@ import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+import runpy
 from fetch import extract
 from runtime import ARCH12, ARCH13, TARGETS, audit_cache, digest, verify, RELEASE, REVISION, recover_incomplete_cmake, verify_source, source_from_build
+from runtime import CPU_TARGETS, CPU_RELEASE, ROOT, primary, sdk_features, package, seal, write_json
 import hashlib
 
 
 class ContractTests(unittest.TestCase):
+    def test_only_two_additional_cpu_variants_and_no_cuda_tool_probe(self):
+        self.assertEqual(set(CPU_TARGETS), {"x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"})
+        self.assertEqual(len(TARGETS) + len(CPU_TARGETS), 7)
+        with self.assertRaises(RuntimeError):
+            sdk_features("aarch64-apple-darwin", "cpu")
+        for target in CPU_TARGETS:
+            self.assertEqual(sdk_features(target, "cpu"), ["common"])
+            self.assertIn("cuda", sdk_features(target))
+            with tempfile.TemporaryDirectory() as temp, \
+                    patch("runtime.subprocess.check_output", side_effect=AssertionError("unexpected CUDA probe")), \
+                    patch("runtime.cargo_build", side_effect=RuntimeError("stop before compilation")) as build:
+                with self.assertRaisesRegex(RuntimeError, "stop before compilation"):
+                    primary(target, Path(temp) / "bundle", Path(temp) / "build", "cpu")
+                self.assertEqual(build.call_args.kwargs["features"], ["common"])
+
+    def test_cpu_packaging_and_existing_publisher_prepare_only(self):
+        # Synthetic archive contracts, not Linux/Windows native execution.
+        cache = {key: "OFF" for key in ["GGML_NATIVE", "GGML_OPENMP", "LLAMA_BUILD_TESTS",
+            "LLAMA_BUILD_EXAMPLES", "LLAMA_BUILD_TOOLS", "LLAMA_BUILD_APP", "LLAMA_BUILD_SERVER",
+            "LLAMA_CURL", "BUILD_SHARED_LIBS", "GGML_CUDA", "GGML_BACKEND_DL", "GGML_CPU_ALL_VARIANTS",
+            "GGML_METAL", "GGML_VULKAN", "GGML_OPENCL", "GGML_HIP"]}
+        cache.update(CMAKE_BUILD_TYPE="Release", LLAMA_BUILD_COMMON="ON", GGML_CPU="ON")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            assets = root / "assets"
+            for target in CPU_TARGETS:
+                bundle = root / target
+                bundle.mkdir()
+                (bundle / "bindings.rs").write_bytes(b"// fixture, not native code")
+                (bundle / "lib").mkdir()
+                for name in ("llama", "ggml", "ggml-base", "ggml-cpu"):
+                    filename = f"{name}.lib" if "windows" in target else f"lib{name}.a"
+                    (bundle / "lib" / filename).write_bytes(b"archive fixture")
+                manifest = {"schema": 1, "release": CPU_RELEASE, "crate_version": "0.1.154",
+                    "llama_cpp_revision": REVISION, "source_commit": "1" * 40, "target": target,
+                    "features": ["common"], "linkage": "static", "primary_cmake": cache,
+                    "link_libraries": [f"static={name}" for name in ("llama", "ggml", "ggml-base", "ggml-cpu")]}
+                write_json(bundle / "manifest.json", manifest)
+                seal(bundle)
+                package(bundle, assets)
+                archive = next(assets.glob(f"*{target}.tar.gz"))
+                extract(archive, root / (target + "-relocated"))
+                verify(root / (target + "-relocated"))
+                write_json(bundle / "manifest.json", {**manifest, "primary_cmake": {**cache, "GGML_OPENMP": "ON"}})
+                seal(bundle)
+                with self.assertRaisesRegex(RuntimeError, "Build contract mismatch"):
+                    verify(bundle)
+            env = {"GITHUB_SHA": "1" * 40, "GITHUB_SERVER_URL": "https://github.com",
+                   "GITHUB_REPOSITORY": "zvec-ai/llama-cpp-rs", "GITHUB_RUN_ID": "fixture"}
+            command = ["publish.py", "--assets", str(assets), "--variant", "cpu", "--prepare-only"]
+            with patch("sys.argv", command), patch.dict("os.environ", env), \
+                    patch("subprocess.run", side_effect=AssertionError("must not call GitHub")):
+                with self.assertRaises(SystemExit) as stopped:
+                    runpy.run_path(str(ROOT / "native/publish.py"), run_name="__main__")
+                self.assertEqual(stopped.exception.code, 0)
+            lock = json.loads((assets / "cpu-runtime-lock.json").read_text())
+            self.assertEqual(set(lock["targets"]), set(CPU_TARGETS))
+            for target, entry in lock["targets"].items():
+                self.assertEqual(entry["features"], ["common"])
+                self.assertEqual(entry["cmake"]["GGML_CUDA"], "OFF")
+                self.assertEqual(entry["sha256"], digest(assets / entry["archive"]))
+            self.assertNotIn("T4 GPU runners", (assets / "release-notes.md").read_text())
+            archive.write_bytes(b"corrupted")
+            with patch("sys.argv", command), patch.dict("os.environ", env), \
+                    patch("subprocess.run", side_effect=AssertionError("must not call GitHub")):
+                with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
+                    runpy.run_path(str(ROOT / "native/publish.py"), run_name="__main__")
+
     def test_source_metadata_and_tree_are_verified_without_git(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

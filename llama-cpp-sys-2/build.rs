@@ -400,6 +400,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build_support/external.rs");
     println!("cargo:rerun-if-changed=build_support/automatic.rs");
     println!("cargo:rerun-if-changed=build_support/runtime-lock.json");
+    println!("cargo:rerun-if-changed=build_support/cpu-runtime-lock.json");
     println!("cargo:rerun-if-changed=build_support/source.rs");
     println!("cargo:rerun-if-changed=build_support/source-lock.json");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_BUILD_MODE");

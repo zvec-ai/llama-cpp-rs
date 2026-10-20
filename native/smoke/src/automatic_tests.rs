@@ -19,6 +19,72 @@ fn variables(values: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 #[test]
+fn cpu_variants_select_before_download_and_keep_native_options_strict() {
+    let legacy = automatic::runtime_lock().unwrap();
+    let unpublished = automatic::cpu_runtime_lock().unwrap();
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let features = BTreeSet::from(["common".into()]);
+        if unpublished.targets.is_empty() {
+            assert!(automatic::select_runtime(
+                std::slice::from_ref(&legacy),
+                target,
+                &features,
+                &variables(&[])
+            )
+            .is_none());
+        }
+        let cpu = serde_json::from_value(json!({"release":"zvec-0.1.154-cpu-r1", "targets":{(target):{
+            "archive":"cpu-only.tar.gz", "sha256":"fixture", "manifest_sha256":"fixture",
+            "features":["common"], "cmake":{"BUILD_SHARED_LIBS":"OFF", "GGML_CUDA":"OFF", "GGML_OPENMP":"OFF"}
+        }}})).unwrap();
+        let locks = [automatic::runtime_lock().unwrap(), cpu];
+        let selected =
+            automatic::select_runtime(&locks, target, &features, &variables(&[])).unwrap();
+        assert_eq!(selected.release, "zvec-0.1.154-cpu-r1");
+        assert_eq!(selected.targets[target].archive, "cpu-only.tar.gz");
+        assert_eq!(
+            automatic::select_runtime(
+                &locks,
+                target,
+                &legacy.targets[target].features,
+                &variables(&[])
+            )
+            .unwrap()
+            .release,
+            legacy.release
+        );
+        for override_ in [
+            ("LLAMA_BUILD_SHARED_LIBS", "1"),
+            ("LLAMA_STATIC_CRT", "1"),
+            ("GGML_OPENMP", "ON"),
+            ("GGML_CPU_REPACK", "OFF"),
+            ("CXXFLAGS", "-ffast-math"),
+            ("LLAMA_LIB_PROFILE", "Debug"),
+        ] {
+            assert!(
+                automatic::select_runtime(&locks, target, &features, &variables(&[override_]))
+                    .is_none(),
+                "{override_:?}"
+            );
+        }
+        for extra in ["cuda", "dynamic-link", "dynamic-backends", "openmp"] {
+            let mut different = features.clone();
+            different.insert(extra.into());
+            assert!(
+                automatic::select_runtime(&locks, target, &different, &variables(&[])).is_none()
+            );
+        }
+    }
+}
+
+#[test]
+fn cpu_archives_reuse_the_existing_verified_cache_path() {
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        check_archive_cache(target, "zvec-0.1.154-cpu-r1", json!(["common"]));
+    }
+}
+
+#[test]
 fn matching_defaults_and_explicit_native_options_reuse_sdk() {
     let lock = automatic::runtime_lock().unwrap();
     let bundle = &lock.targets["aarch64-apple-darwin"];
@@ -174,13 +240,21 @@ fn offline_cache_miss_and_bad_archive_do_not_silently_build_source() {
 
 #[test]
 fn acquire_validates_cold_archive_warm_cache_and_corruption() {
+    check_archive_cache(
+        "aarch64-apple-darwin",
+        "zvec-0.1.154-r1",
+        json!(["common", "metal"]),
+    );
+}
+
+fn check_archive_cache(target: &str, release: &str, features: serde_json::Value) {
     let temporary = tempfile::tempdir().unwrap();
     let binding = temporary.path().join("bindings.rs");
     fs::write(&binding, b"// fixture").unwrap();
     let manifest = serde_json::to_vec(&json!({
-        "schema": 1, "release": "zvec-0.1.154-r1", "crate_version": "0.1.154",
+        "schema": 1, "release": release, "crate_version": "0.1.154",
         "llama_cpp_revision": "5f55650a78f92aff4d48d671423e888fac0469ff",
-        "target": "aarch64-apple-darwin", "features": ["common", "metal"],
+        "target": target, "features": features,
         "linkage": "static", "link_libraries": ["c++"],
         "files": {"bindings.rs": external::sha256(&binding).unwrap()}
     }))
@@ -196,22 +270,21 @@ fn acquire_validates_cold_archive_warm_cache_and_corruption() {
         ],
     );
     let lock: automatic::RuntimeLock = serde_json::from_value(json!({
-        "release": "zvec-0.1.154-r1", "targets": {"aarch64-apple-darwin": {
+        "release": release, "targets": {(target): {
             "archive": "fixture.tgz", "sha256": external::sha256(&archive).unwrap(),
             "manifest_sha256": external::sha256(&manifest_file).unwrap(),
-            "features": ["common", "metal"], "cmake": {}
+            "features": features, "cmake": {}
         }}
     }))
     .unwrap();
     let cache = temporary.path().join("cache");
-    let root =
-        automatic::acquire(&lock, "aarch64-apple-darwin", &cache, Some(&archive), true).unwrap();
+    let root = automatic::acquire(&lock, target, &cache, Some(&archive), true).unwrap();
     assert_eq!(
         root,
-        automatic::acquire(&lock, "aarch64-apple-darwin", &cache, None, true).unwrap()
+        automatic::acquire(&lock, target, &cache, None, true).unwrap()
     );
     fs::write(root.join("bindings.rs"), b"corrupt").unwrap();
-    assert!(automatic::acquire(&lock, "aarch64-apple-darwin", &cache, None, true).is_err());
+    assert!(automatic::acquire(&lock, target, &cache, None, true).is_err());
     assert!(fs::read_dir(root.parent().unwrap())
         .unwrap()
         .all(|entry| !entry

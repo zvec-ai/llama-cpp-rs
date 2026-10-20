@@ -13,6 +13,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = "zvec-0.1.154-r1"
+CPU_RELEASE = json.loads((ROOT / "llama-cpp-sys-2/build_support/cpu-runtime-lock.json").read_text(encoding="utf-8"))["release"]
 SOURCE_LOCK = json.loads((ROOT / "llama-cpp-sys-2/build_support/source-lock.json").read_text(encoding="utf-8"))
 REVISION = SOURCE_LOCK["revision"]
 ARCH13 = "75-real;80-real;86-real;89-real;90-real;90-virtual"
@@ -24,6 +25,16 @@ TARGETS = {
     "x86_64-unknown-linux-gnu": ["common", "cuda", "dynamic-backends", "dynamic-link"],
     "x86_64-pc-windows-msvc": ["common", "cuda", "dynamic-backends", "dynamic-link"],
 }
+CPU_TARGETS = {target: ["common"] for target in
+               ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc")}
+
+
+def sdk_features(target, variant="default"):
+    if variant == "cpu":
+        if target not in CPU_TARGETS:
+            raise RuntimeError("Additional CPU-only SDKs exist only on Linux/Windows x64")
+        return CPU_TARGETS[target]
+    return TARGETS[target]
 
 
 def digest(path):
@@ -47,10 +58,10 @@ def write_json(path, value):
     Path(path).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def cargo_build(target, target_dir, env):
+def cargo_build(target, target_dir, env, features=None):
     command = ["cargo", "build", "--locked", "--release", "-p", "native-smoke",
                "--target", target, "--target-dir", target_dir, "--message-format=json"]
-    if "cuda" in TARGETS[target]:
+    if "cuda" in (TARGETS[target] if features is None else features):
         command += ["--features", "cuda"]
     try:
         result = run(command, env=env, stdout=subprocess.PIPE, text=True)
@@ -77,8 +88,8 @@ def cache_entries(path):
     return result
 
 
-def audit_cache(cache, target, fallback=False):
-    cuda = "cuda" in TARGETS[target]
+def audit_cache(cache, target, fallback=False, variant="default"):
+    cuda = "cuda" in sdk_features(target, variant)
     expected = {"CMAKE_BUILD_TYPE": "Release", "GGML_NATIVE": "OFF", "GGML_OPENMP": "OFF",
                 "LLAMA_BUILD_TESTS": "OFF", "LLAMA_BUILD_EXAMPLES": "OFF", "LLAMA_BUILD_TOOLS": "OFF",
                 "LLAMA_BUILD_APP": "OFF", "LLAMA_BUILD_SERVER": "OFF", "LLAMA_CURL": "OFF",
@@ -93,6 +104,9 @@ def audit_cache(cache, target, fallback=False):
             expected["GGML_CPU_ALL_VARIANTS"] = "ON"
     else:
         expected.update(GGML_CUDA="OFF", GGML_CPU="ON")
+        if variant == "cpu":
+            expected.update(GGML_BACKEND_DL="OFF", GGML_CPU_ALL_VARIANTS="OFF",
+                            GGML_METAL="OFF", GGML_VULKAN="OFF", GGML_OPENCL="OFF", GGML_HIP="OFF")
     for key, value in expected.items():
         if cache.get(key) != value:
             raise RuntimeError(f"Build contract mismatch: {key}={cache.get(key)!r}, expected {value}")
@@ -160,15 +174,16 @@ def source_from_build(out):
     return verify_source(metadata["source_dir"])
 
 
-def primary(target, output, target_dir):
+def primary(target, output, target_dir, variant="default"):
     if output.exists():
         raise RuntimeError(f"Refusing to overwrite existing bundle: {output}")
+    features = sdk_features(target, variant)
     env = os.environ.copy()
     env["LLAMA_CPP_BUILD_MODE"] = "source"
     # The two Linux containers share /work/target, not /root/.cargo.
     env.setdefault("LLAMA_CPP_SOURCE_CACHE", str(ROOT / "target/native-source"))
     env.pop("LLAMA_CPP_RUNTIME_DIR", None)
-    if "cuda" in TARGETS[target]:
+    if "cuda" in features:
         nvcc = subprocess.check_output(["nvcc", "--version"], text=True)
         if "release 13.1," not in nvcc:
             raise RuntimeError("Primary plugin requires CUDA 13.1")
@@ -176,10 +191,10 @@ def primary(target, output, target_dir):
     if target == "x86_64-apple-darwin":
         env["MACOSX_DEPLOYMENT_TARGET"] = "14.0"
     recover_incomplete_cmake(target_dir, target)
-    out, _ = cargo_build(target, target_dir, env)
+    out, _ = cargo_build(target, target_dir, env, features=features)
     source_root = source_from_build(out)
     write_json(target_dir / "source-root.json", {"revision": REVISION, "path": str(source_root)})
-    cache = audit_cache(cache_entries(out / "build/CMakeCache.txt"), target)
+    cache = audit_cache(cache_entries(out / "build/CMakeCache.txt"), target, variant=variant)
     # Cargo reports exactly this build's OUT_DIR. Never select by newest glob.
     libraries = []
     for line in (out.parent / "output").read_text(encoding="utf-8").splitlines():
@@ -196,7 +211,7 @@ def primary(target, output, target_dir):
                     destination = output / "lib" / path.name
                     if not destination.exists():
                         copy_file(path, destination)
-    if "cuda" in TARGETS[target] and "linux" in target:
+    if "cuda" in features and "linux" in target:
         for path in sorted((output / "lib").glob("*.so*")):
             run(["patchelf", "--set-rpath", "$ORIGIN", path])
     copy_file(out / "bindings.rs", output / "bindings.rs")
@@ -205,9 +220,9 @@ def primary(target, output, target_dir):
                          "jsonhpp-MIT": source_root / "licenses/LICENSE-jsonhpp",
                          "cpp-httplib-MIT": source_root / "vendor/cpp-httplib/LICENSE"}.items():
         copy_file(source, output / "licenses" / name)
-    manifest = {"schema": 1, "release": RELEASE, "crate_version": "0.1.154",
-                "llama_cpp_revision": REVISION, "target": target, "features": TARGETS[target],
-                "linkage": "dynamic" if "cuda" in TARGETS[target] else "static",
+    manifest = {"schema": 1, "release": CPU_RELEASE if variant == "cpu" else RELEASE, "crate_version": "0.1.154",
+                "llama_cpp_revision": REVISION, "target": target, "features": features,
+                "linkage": "dynamic" if "cuda" in features else "static",
                 "link_libraries": libraries, "primary_cmake": cache,
                 "baseline": {"repository": "zvec-ai/zvec-grep", "commit": "cc8fa72938db42b648687fccd99b088e94520186"},
                 "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
@@ -219,7 +234,7 @@ def primary(target, output, target_dir):
 def fallback(output, target_dir, cuda_root):
     manifest = read_json(output / "manifest.json")
     target = manifest["target"]
-    if "cuda" not in TARGETS[target]:
+    if "cuda" not in manifest["features"]:
         raise RuntimeError("Fallback only exists on the two x64 CUDA targets")
     if not (target_dir / "source-root.json").is_file():
         raise RuntimeError("Fallback source record is missing; run primary first")
@@ -268,7 +283,7 @@ def seal(output):
 
 def verify(output):
     manifest = read_json(output / "manifest.json")
-    if manifest["release"] != RELEASE or manifest["llama_cpp_revision"] != REVISION:
+    if manifest["release"] not in (RELEASE, CPU_RELEASE) or manifest["llama_cpp_revision"] != REVISION:
         raise RuntimeError("Wrong release/ABI")
     for name, expected in manifest["files"].items():
         path = output / name
@@ -277,6 +292,13 @@ def verify(output):
     actual = {p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file() and p.name != "manifest.json"}
     if actual != manifest["files"].keys():
         raise RuntimeError("Unexpected payload files")
+    if manifest["release"] == CPU_RELEASE:
+        if (manifest.get("target") not in CPU_TARGETS or manifest["features"] != ["common"]
+                or manifest.get("linkage") != "static"
+                or any(re.search(r"cuda|cublas|nvidia|\.dll$|\.so(?:\.|$)", name, re.I)
+                       for name in manifest["files"])):
+            raise RuntimeError("CPU SDK requires static common/CPU libraries without GPU payloads")
+        audit_cache(manifest["primary_cmake"], manifest["target"], variant="cpu")
     if "cuda" in manifest["features"]:
         filename = "ggml-cuda.dll" if "windows" in manifest["target"] else "libggml-cuda.so"
         if not (output / "lib/cuda12" / filename).is_file() or "fallback_cmake" not in manifest:
@@ -297,7 +319,7 @@ def external(output, target_dir):
                LLAMA_CPP_RUNTIME_MANIFEST_SHA256=digest(output / "manifest.json"),
                LIBCLANG_PATH="/external-mode-must-not-use-libclang", CXX="/external-mode-must-not-compile-cpp",
                CUDA_PATH="/external-mode-must-not-need-cuda-toolkit")
-    out, binary = cargo_build(manifest["target"], target_dir, env)
+    out, binary = cargo_build(manifest["target"], target_dir, env, features=manifest["features"])
     if (out / "build").exists() or (out / "backends").exists():
         raise RuntimeError("External mode unexpectedly built native code")
     command = ["cargo", "test", "--locked", "--release", "-p", "native-smoke",
@@ -321,7 +343,7 @@ def external(output, target_dir):
 def package(output, destination):
     manifest = verify(output)
     destination.mkdir(parents=True, exist_ok=True)
-    archive = destination / f"llama-cpp-runtime-{RELEASE}-{manifest['target']}.tar.gz"
+    archive = destination / f"llama-cpp-runtime-{manifest['release']}-{manifest['target']}.tar.gz"
     if archive.exists():
         raise RuntimeError(f"Refusing to overwrite {archive}")
     with tarfile.open(archive, "w:gz", compresslevel=6) as tar:
@@ -333,7 +355,8 @@ def package(output, destination):
                 with path.open("rb") as data:
                     tar.addfile(info, data)
     (destination / (archive.name + ".sha256")).write_text(f"{digest(archive)}  {archive.name}\n", encoding="utf-8")
-    shutil.copy2(output / "manifest.json", destination / f"{manifest['target']}.manifest.json")
+    suffix = "-cpu" if manifest["release"] == CPU_RELEASE else ""
+    shutil.copy2(output / "manifest.json", destination / f"{manifest['target']}{suffix}.manifest.json")
     print(f"Archive: {archive.name}, {archive.stat().st_size:,} bytes, SHA256 {digest(archive)}")
 
 
@@ -342,6 +365,7 @@ def main():
     parser.add_argument("command", choices=["primary", "fallback", "verify", "external", "package"])
     parser.add_argument("--bundle", type=Path, default=Path("target/native/bundle"))
     parser.add_argument("--target", choices=TARGETS)
+    parser.add_argument("--variant", choices=["default", "cpu"], default="default")
     parser.add_argument("--target-dir", type=Path, default=Path("target/native-build"))
     parser.add_argument("--cuda-root", type=Path, default=Path("/usr/local/cuda"))
     parser.add_argument("--dist", type=Path, default=Path("target/dist"))
@@ -350,7 +374,7 @@ def main():
     if args.command == "primary":
         if not args.target:
             parser.error("primary requires --target")
-        primary(args.target, output, target_dir)
+        primary(args.target, output, target_dir, args.variant)
     elif args.command == "fallback":
         fallback(output, target_dir, args.cuda_root.resolve())
     elif args.command == "external":

@@ -32,6 +32,23 @@ pub fn runtime_lock() -> Result<RuntimeLock> {
     Ok(serde_json::from_str(include_str!("runtime-lock.json"))?)
 }
 
+pub fn cpu_runtime_lock() -> Result<RuntimeLock> {
+    Ok(serde_json::from_str(include_str!("cpu-runtime-lock.json"))?)
+}
+
+pub fn select_runtime<'a>(
+    locks: &'a [RuntimeLock],
+    target: &str,
+    features: &BTreeSet<String>,
+    variables: &BTreeMap<String, String>,
+) -> Option<&'a RuntimeLock> {
+    locks.iter().find(|lock| {
+        lock.targets
+            .get(target)
+            .is_some_and(|bundle| mismatches(bundle, features, variables).is_empty())
+    })
+}
+
 const SOURCE_OPTIONS: &[&str] = &[
     "LLAMA_LIB_PROFILE",
     "LLAMA_STATIC_CRT",
@@ -103,11 +120,11 @@ const OTHER_OPTIONS: &[&str] = &[
 ];
 
 pub fn watch_environment() -> Result<()> {
-    let lock = runtime_lock()?;
+    let locks = [runtime_lock()?, cpu_runtime_lock()?];
     let mut names = BTreeSet::<String>::new();
     // Watch supported options even when unset, so adding an override on the
     // next Cargo invocation invalidates an already-cached prebuilt selection.
-    for entry in lock.targets.values() {
+    for entry in locks.iter().flat_map(|lock| lock.targets.values()) {
         names.extend(entry.cmake.keys().cloned());
     }
     names.extend(
@@ -394,16 +411,20 @@ pub fn offline() -> bool {
 }
 
 pub fn try_build(prebuilt_only: bool) -> Result<bool> {
-    let lock = runtime_lock()?;
+    let locks = [runtime_lock()?, cpu_runtime_lock()?];
     let target = env::var("TARGET")?;
     let variables = env::vars().collect();
     let features = external::enabled_features();
-    let bundle = lock.targets.get(&target);
-    let reasons = bundle.map_or_else(
-        || vec![format!("no SDK for target {target}")],
-        |bundle| mismatches(bundle, &features, &variables),
-    );
-    if !reasons.is_empty() {
+    let Some(lock) = select_runtime(&locks, &target, &features, &variables) else {
+        let reasons: Vec<_> = locks
+            .iter()
+            .flat_map(|lock| {
+                lock.targets.get(&target).map_or_else(
+                    || vec![format!("no pinned SDK for {target} in {}", lock.release)],
+                    |bundle| mismatches(bundle, &features, &variables),
+                )
+            })
+            .collect();
         if prebuilt_only {
             return Err(format!("prebuilt mode is incompatible: {}", reasons.join("; ")).into());
         }
@@ -412,19 +433,19 @@ pub fn try_build(prebuilt_only: bool) -> Result<bool> {
             reasons.join("; ")
         );
         return Ok(false);
-    }
+    };
     let archive = env::var_os("LLAMA_CPP_RUNTIME_ARCHIVE").map(PathBuf::from);
     if let Some(archive) = &archive {
         println!("cargo:rerun-if-changed={}", archive.display());
     }
     let root = acquire(
-        &lock,
+        lock,
         &target,
         &cache_directory()?,
         archive.as_deref(),
         offline(),
     )?;
-    external::build_verified(&root, &bundle.unwrap().manifest_sha256)?;
+    external::build_verified(&root, &lock.targets[&target].manifest_sha256)?;
     Ok(true)
 }
 
