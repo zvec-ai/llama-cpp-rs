@@ -2,6 +2,30 @@ use super::{external_contract as external, source_contract as source};
 use flate2::{write::GzEncoder, Compression};
 use std::{fs, path::Path};
 
+#[test]
+fn compiler_paths_normalize_only_windows_dos_and_unc_namespaces() {
+    for (input, expected) in [
+        (r"\\?\D:\work\源码 with spaces", r"D:\work\源码 with spaces"),
+        (r"\\?\UNC\server\share\source", r"\\server\share\source"),
+        (r"D:\work\source", r"D:\work\source"),
+        (r"\\?\Volume{abc}\source", r"\\?\Volume{abc}\source"),
+        (r"\\.\pipe\name", r"\\.\pipe\name"),
+        (r"/tmp/\\?\source", r"/tmp/\\?\source"),
+    ] {
+        assert_eq!(source::compiler_path(Path::new(input)), Path::new(expected));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn compiler_path_preserves_the_verified_directory_on_windows() {
+    let temp = tempfile::tempdir().unwrap();
+    let canonical = temp.path().canonicalize().unwrap();
+    let compatible = source::compiler_path(&canonical);
+    assert!(!compatible.to_str().unwrap().starts_with(r"\\?\"));
+    assert_eq!(compatible.canonicalize().unwrap(), canonical);
+}
+
 fn archive(path: &Path, entries: &[(&str, tar::EntryType, &[u8])]) {
     let mut tar = tar::Builder::new(GzEncoder::new(
         fs::File::create(path).unwrap(),

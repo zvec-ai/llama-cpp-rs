@@ -311,6 +311,24 @@ fn cache_directory() -> Result<PathBuf> {
     Ok(cargo_home.join("llama-cpp-sources"))
 }
 
+#[cfg(any(windows, test))]
+pub fn compiler_path(path: &Path) -> PathBuf {
+    // canonicalize() emits verbatim Windows paths; MSVC /I cannot use them.
+    // Convert only DOS/UNC paths, not arbitrary device or volume namespaces.
+    let Some(tail) = path.to_str().and_then(|name| name.strip_prefix(r"\\?\")) else {
+        return path.to_path_buf();
+    };
+    if let Some(unc) = tail.strip_prefix(r"UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    if tail.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && tail.as_bytes().get(1..3) == Some(b":\\")
+    {
+        return PathBuf::from(tail);
+    }
+    path.to_path_buf()
+}
+
 pub fn resolve() -> Result<PathBuf> {
     let lock = source_lock()?;
     let directory = env::var_os("LLAMA_CPP_SOURCE_DIR").map(PathBuf::from);
@@ -329,6 +347,16 @@ pub fn resolve() -> Result<PathBuf> {
         archive.as_deref(),
         automatic::offline(),
     )?;
+    #[cfg(windows)]
+    let root = {
+        let compatible = compiler_path(&root);
+        // Removing verbatim syntax must not redirect compilation to a different
+        // tree (for example a Win32 path containing trailing dots or spaces).
+        if compatible.canonicalize()? != root {
+            return Err("compiler-compatible source path resolves to a different directory".into());
+        }
+        compatible
+    };
     println!("cargo:source_dir={}", root.display());
     // Include directory membership, vendor headers and all other pinned files
     // in Cargo's freshness checks, not only the CMake/source subset below.
