@@ -165,9 +165,10 @@ existing delay-load setup). This step does not change zg's loader or packaging.
 
 ## Build and release
 
-`native-release.yml` runs on pushes to `prebuilt/0.1.154`. All five native builds
-and real CPU inference tests run on ordinary hosted runners. **Only** the Linux
-x64 and Windows x64 runtime verification jobs use `gpu-runners`, labels
+`native-release.yml` runs only via `workflow_dispatch`; select `prebuilt/0.1.154`
+when publishing. Ordinary pushes do not rebuild or republish native SDKs.
+All five native builds and real CPU inference tests run on ordinary hosted
+runners. **Only** the Linux x64 and Windows x64 runtime verification jobs use `gpu-runners`, labels
 `gpu-linux-t4` and `gpu-windows-t4`. They download the already-built SDK and Rust
 probe; they do not rebuild native code.
 

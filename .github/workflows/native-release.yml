@@ -1,8 +1,6 @@
 name: Native runtime release
 
 on:
-  push:
-    branches: [prebuilt/0.1.154]
   workflow_dispatch:
 
 permissions:
