@@ -29,10 +29,12 @@ Only the two x64 targets gain an additional CPU-only archive (seven SDKs total).
 They use `zvec-0.1.154-cpu-r1` and `build_support/cpu-runtime-lock.json`; existing
 archives and CUDA loading/fallback logic are unchanged. Exact features and native
 options select the archive before any download, using the existing verified cache.
-The CPU lock intentionally has no target pins until real Linux/Windows artifacts
-are built and reviewed. Until then, x64 `{common}` still builds source in `auto`
-and fails in `prebuilt`; it never downloads a CUDA archive instead. The Windows
-source-build C1083/header-path issue is separate and is not fixed here.
+The CPU lock pins the published Linux/Windows archives after real builds,
+external-consumer linkage and CPU inference passed in
+[run 39413216584](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/39413216584).
+Matching x64 `{common}` builds use only the CPU archive in `auto` and `prebuilt`;
+they never download a CUDA archive instead. The same run also verified the
+Windows source-build C1083/header-path fix included in `5abf435`.
 
 `common` is intentional: upstream's safe crate still enables the sys crate's
 default features even when its own defaults are disabled, exactly as in zg.

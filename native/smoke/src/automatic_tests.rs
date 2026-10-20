@@ -21,37 +21,31 @@ fn variables(values: &[(&str, &str)]) -> BTreeMap<String, String> {
 #[test]
 fn cpu_variants_select_before_download_and_keep_native_options_strict() {
     let legacy = automatic::runtime_lock().unwrap();
-    let unpublished = automatic::cpu_runtime_lock().unwrap();
+    let cpu = automatic::cpu_runtime_lock().unwrap();
+    assert_eq!(cpu.targets.len(), 2);
+    let locks = [legacy, cpu];
     for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
         let features = BTreeSet::from(["common".into()]);
-        if unpublished.targets.is_empty() {
-            assert!(automatic::select_runtime(
-                std::slice::from_ref(&legacy),
-                target,
-                &features,
-                &variables(&[])
-            )
-            .is_none());
-        }
-        let cpu = serde_json::from_value(json!({"release":"zvec-0.1.154-cpu-r1", "targets":{(target):{
-            "archive":"cpu-only.tar.gz", "sha256":"fixture", "manifest_sha256":"fixture",
-            "features":["common"], "cmake":{"BUILD_SHARED_LIBS":"OFF", "GGML_CUDA":"OFF", "GGML_OPENMP":"OFF"}
-        }}})).unwrap();
-        let locks = [automatic::runtime_lock().unwrap(), cpu];
         let selected =
             automatic::select_runtime(&locks, target, &features, &variables(&[])).unwrap();
         assert_eq!(selected.release, "zvec-0.1.154-cpu-r1");
-        assert_eq!(selected.targets[target].archive, "cpu-only.tar.gz");
+        assert_eq!(
+            selected.targets[target].archive,
+            format!("llama-cpp-runtime-zvec-0.1.154-cpu-r1-{target}.tar.gz")
+        );
+        assert_eq!(selected.targets[target].cmake["BUILD_SHARED_LIBS"], "OFF");
+        assert_eq!(selected.targets[target].cmake["GGML_CUDA"], "OFF");
+        assert_eq!(selected.targets[target].cmake["GGML_BACKEND_DL"], "OFF");
         assert_eq!(
             automatic::select_runtime(
                 &locks,
                 target,
-                &legacy.targets[target].features,
+                &locks[0].targets[target].features,
                 &variables(&[])
             )
             .unwrap()
             .release,
-            legacy.release
+            locks[0].release
         );
         for override_ in [
             ("LLAMA_BUILD_SHARED_LIBS", "1"),
