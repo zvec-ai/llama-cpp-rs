@@ -12,7 +12,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE = "zvec-0.1.154-r1"
+RELEASE = "zvec-0.1.154-r2"
 CPU_RELEASE = json.loads((ROOT / "llama-cpp-sys-2/build_support/cpu-runtime-lock.json").read_text(encoding="utf-8"))["release"]
 SOURCE_LOCK = json.loads((ROOT / "llama-cpp-sys-2/build_support/source-lock.json").read_text(encoding="utf-8"))
 REVISION = SOURCE_LOCK["revision"]

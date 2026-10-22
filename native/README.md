@@ -12,8 +12,10 @@ No crates.io packages are published.
 Baseline: `zvec-ai/zvec-grep`, branch `codex/cuda-static-linking`, commit
 `cc8fa72938db42b648687fccd99b088e94520186`.
 Native source: llama.cpp `5f55650a78f92aff4d48d671423e888fac0469ff`.
-Bundle release: `zvec-0.1.154-r1`. Native ABI/configuration changes require a new
-bundle revision; bootstrap-only changes can reuse this pinned native SDK.
+Next bundle release: `zvec-0.1.154-r2`. The embedded runtime lock still pins
+`zvec-0.1.154-r1` until the new native artifacts have been built and verified.
+Native ABI/configuration changes require a new bundle revision; bootstrap-only
+changes can reuse the pinned native SDK.
 
 | Rust target | Native linkage | sys features |
 | --- | --- | --- |
