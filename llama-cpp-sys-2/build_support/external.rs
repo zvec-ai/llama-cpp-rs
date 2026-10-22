@@ -7,8 +7,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
-const RELEASE: &str = "zvec-0.1.154-r1";
-const CPU_RELEASE: &str = "zvec-0.1.154-cpu-r1";
+const RELEASES: &[&str] = &["zvec-0.1.154-r1", "zvec-0.1.154-r2", "zvec-0.1.154-cpu-r1"];
 pub(super) const REVISION: &str = "5f55650a78f92aff4d48d671423e888fac0469ff";
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -89,7 +88,7 @@ fn inventory(root: &Path, directory: &Path, files: &mut BTreeSet<String>) -> Res
 pub fn validate(root: &Path, target: &str, features: &BTreeSet<String>) -> Result<Manifest> {
     let manifest: Manifest = serde_json::from_slice(&fs::read(root.join("manifest.json"))?)?;
     if manifest.schema != 1
-        || ![RELEASE, CPU_RELEASE].contains(&manifest.release.as_str())
+        || !RELEASES.contains(&manifest.release.as_str())
         || manifest.crate_version != "0.1.154"
         || manifest.llama_cpp_revision != REVISION
     {

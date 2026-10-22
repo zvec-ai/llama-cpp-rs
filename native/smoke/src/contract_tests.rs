@@ -35,6 +35,29 @@ fn valid_bundle_and_corruption() {
 }
 
 #[test]
+fn r1_and_r2_keep_strict_release_abi_and_checksum_validation() {
+    for release in ["zvec-0.1.154-r1", "zvec-0.1.154-r2"] {
+        let (temp, mut manifest, features) = fixture();
+        manifest["release"] = json!(release);
+        save(temp.path(), &manifest);
+        assert!(validate(temp.path(), "aarch64-apple-darwin", &features).is_ok());
+        for (key, value) in [
+            ("release", json!("zvec-0.1.154-r3")),
+            ("llama_cpp_revision", json!("wrong")),
+            ("files", json!({"bindings.rs": "0".repeat(64)})),
+        ] {
+            let mut changed = manifest.clone();
+            changed[key] = value;
+            save(temp.path(), &changed);
+            assert!(
+                validate(temp.path(), "aarch64-apple-darwin", &features).is_err(),
+                "accepted invalid {key} for {release}"
+            );
+        }
+    }
+}
+
+#[test]
 fn reject_abi_target_features_and_linkage_mismatch() {
     let (temp, manifest, features) = fixture();
     for (key, value) in [
