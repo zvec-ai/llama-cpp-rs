@@ -16,7 +16,7 @@ RELEASE = "zvec-0.1.154-r1"
 CPU_RELEASE = json.loads((ROOT / "llama-cpp-sys-2/build_support/cpu-runtime-lock.json").read_text(encoding="utf-8"))["release"]
 SOURCE_LOCK = json.loads((ROOT / "llama-cpp-sys-2/build_support/source-lock.json").read_text(encoding="utf-8"))
 REVISION = SOURCE_LOCK["revision"]
-ARCH13 = "75-real;80-real;86-real;89-real;90-real;90-virtual"
+ARCH13 = "75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real"
 ARCH12 = "50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real"
 TARGETS = {
     "aarch64-apple-darwin": ["common", "metal"],

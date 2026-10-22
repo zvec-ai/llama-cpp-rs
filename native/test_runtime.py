@@ -104,8 +104,32 @@ class ContractTests(unittest.TestCase):
     def test_only_two_cuda_targets(self):
         self.assertEqual({target for target, features in TARGETS.items() if "cuda" in features},
                          {"x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"})
-        self.assertEqual(ARCH13, "75-real;80-real;86-real;89-real;90-real;90-virtual")
+        self.assertEqual(ARCH13, "75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real")
         self.assertEqual(ARCH12, "50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real")
+
+    def test_cuda_primary_passes_distribution_architectures_to_both_targets(self):
+        for target in ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temp, \
+                    patch("runtime.subprocess.check_output", return_value="Cuda compilation tools, release 13.1, V13.1.115"), \
+                    patch("runtime.cargo_build", side_effect=RuntimeError("stop before compilation")) as build, \
+                    patch.dict("os.environ", {"CMAKE_CUDA_ARCHITECTURES": "native"}):
+                with self.assertRaisesRegex(RuntimeError, "stop before compilation"):
+                    primary(target, Path(temp) / "bundle", Path(temp) / "build")
+                self.assertEqual(build.call_args.args[2]["CMAKE_CUDA_ARCHITECTURES"], ARCH13)
+                self.assertEqual(build.call_args.kwargs["features"], TARGETS[target])
+
+    def test_cuda_cache_audit_preserves_other_options_and_fallback(self):
+        lock = json.loads((ROOT / "llama-cpp-sys-2/build_support/runtime-lock.json").read_text())
+        for target in ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"):
+            with self.subTest(target=target):
+                cache = dict(lock["targets"][target]["cmake"])
+                cache["CMAKE_CUDA_ARCHITECTURES"] = ARCH13
+                self.assertEqual(audit_cache(cache, target)["CMAKE_CUDA_ARCHITECTURES"], ARCH13)
+                with self.assertRaisesRegex(RuntimeError, "CMAKE_CUDA_ARCHITECTURES"):
+                    audit_cache({**cache, "CMAKE_CUDA_ARCHITECTURES": "native"}, target)
+                fallback = {**cache, "CMAKE_CUDA_ARCHITECTURES": ARCH12,
+                            "LLAMA_BUILD_COMMON": "OFF", "GGML_CPU": "OFF"}
+                self.assertEqual(audit_cache(fallback, target, fallback=True)["CMAKE_CUDA_ARCHITECTURES"], ARCH12)
 
     def test_tar_rejects_traversal_links_duplicates(self):
         for name, kind in [("../outside", tarfile.REGTYPE), ("/absolute", tarfile.REGTYPE),

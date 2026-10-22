@@ -44,8 +44,12 @@ matching zg. OpenMP is disabled. Release native builds are used for both debug
 and release Rust consumers. Linux GNU builds use Ubuntu 24.04; do not claim an
 older glibc baseline. MSVC uses the dynamic CRT.
 
-CUDA 13.1.1 primary architectures:
-`75-real;80-real;86-real;89-real;90-real;90-virtual`.
+CUDA 13.1.1 primary build architectures (matching node-llama-cpp's non-native defaults):
+`75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real`.
+The currently pinned `zvec-0.1.154-r1` SDK still records its original
+`75-real;80-real;86-real;89-real;90-real;90-virtual` configuration. The new
+configuration requires a new bundle revision; do not relabel the existing
+release or change its locked metadata/digests before rebuilding and verifying it.
 CUDA 12.4.1 fallback architectures:
 `50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real`.
 The fallback is **only** `lib/cuda12/ggml-cuda.dll` or
