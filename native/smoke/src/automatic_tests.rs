@@ -22,37 +22,40 @@ fn variables(values: &[(&str, &str)]) -> BTreeMap<String, String> {
 fn cpu_variants_select_before_download_and_keep_native_options_strict() {
     let legacy = automatic::runtime_lock().unwrap();
     let cpu = automatic::cpu_runtime_lock().unwrap();
-    assert_eq!(cpu.targets.len(), 2);
+    assert_eq!(cpu.targets.len(), 3);
     let locks = [legacy, cpu];
-    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+    for target in [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+    ] {
         let features = BTreeSet::from(["common".into()]);
         let selected =
             automatic::select_runtime(&locks, target, &features, &variables(&[])).unwrap();
-        assert_eq!(selected.release, "zvec-0.1.154-cpu-r1");
+        assert_eq!(selected.release, "zvec-0.1.154-cpu-r2");
         assert_eq!(
             selected.targets[target].archive,
-            format!("llama-cpp-runtime-zvec-0.1.154-cpu-r1-{target}.tar.gz")
+            format!("llama-cpp-runtime-zvec-0.1.154-cpu-r2-{target}.tar.gz")
         );
         assert_eq!(selected.targets[target].cmake["BUILD_SHARED_LIBS"], "OFF");
         assert_eq!(selected.targets[target].cmake["GGML_CUDA"], "OFF");
         assert_eq!(selected.targets[target].cmake["GGML_BACKEND_DL"], "OFF");
-        assert_eq!(
-            automatic::select_runtime(
-                &locks,
-                target,
-                &locks[0].targets[target].features,
-                &variables(&[])
-            )
-            .unwrap()
-            .release,
-            locks[0].release
-        );
+        if let Some(default) = locks[0].targets.get(target) {
+            assert_eq!(
+                automatic::select_runtime(&locks, target, &default.features, &variables(&[]))
+                    .unwrap()
+                    .release,
+                locks[0].release
+            );
+        }
         for override_ in [
             ("LLAMA_BUILD_SHARED_LIBS", "1"),
             ("LLAMA_STATIC_CRT", "1"),
             ("GGML_OPENMP", "ON"),
             ("GGML_CPU_REPACK", "OFF"),
             ("CXXFLAGS", "-ffast-math"),
+            ("CXX", "clang-cl"),
+            ("CMAKE_GENERATOR", "Ninja"),
             ("LLAMA_LIB_PROFILE", "Debug"),
         ] {
             assert!(
@@ -72,10 +75,94 @@ fn cpu_variants_select_before_download_and_keep_native_options_strict() {
 }
 
 #[test]
+fn cpu_r2_keeps_default_targets_and_cuda_architectures_at_r1() {
+    let locks = [
+        automatic::runtime_lock().unwrap(),
+        automatic::cpu_runtime_lock().unwrap(),
+    ];
+    assert_eq!(locks[0].release, "zvec-0.1.154-r1");
+    assert_eq!(locks[1].release, "zvec-0.1.154-cpu-r2");
+    assert_eq!(locks[0].targets.len(), 5);
+    for (target, bundle) in &locks[0].targets {
+        let selected =
+            automatic::select_runtime(&locks, target, &bundle.features, &variables(&[])).unwrap();
+        assert_eq!(selected.release, "zvec-0.1.154-r1");
+        if bundle.features.contains("cuda") {
+            let architectures = "75-real;80-real;86-real;89-real;90-real;90-virtual";
+            assert_eq!(bundle.cmake["CMAKE_CUDA_ARCHITECTURES"], architectures);
+            assert_eq!(
+                automatic::select_runtime(
+                    &locks,
+                    target,
+                    &bundle.features,
+                    &variables(&[("CMAKE_CUDA_ARCHITECTURES", architectures)])
+                )
+                .unwrap()
+                .release,
+                "zvec-0.1.154-r1"
+            );
+            assert!(automatic::select_runtime(
+                &locks,
+                target,
+                &bundle.features,
+                &variables(&[(
+                    "CMAKE_CUDA_ARCHITECTURES",
+                    "75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real"
+                )])
+            )
+            .is_none());
+        }
+    }
+    let arm = &locks[1].targets["aarch64-pc-windows-msvc"];
+    assert!(arm.cmake["CMAKE_CXX_FLAGS"]
+        .split_whitespace()
+        .any(|flag| flag == "/EHsc"));
+    assert_eq!(arm.cmake["GGML_METAL"], "OFF");
+    assert_eq!(arm.cmake["GGML_OPENMP"], "OFF");
+}
+
+#[test]
+#[ignore = "requires LLAMA_CPP_TEST_RUNTIME_TARGET and LLAMA_CPP_TEST_RUNTIME_ARCHIVE with a published SDK"]
+fn published_sdk_archive_populates_and_reuses_offline_cache() {
+    let target = std::env::var("LLAMA_CPP_TEST_RUNTIME_TARGET").unwrap();
+    let archive = std::env::var_os("LLAMA_CPP_TEST_RUNTIME_ARCHIVE").unwrap();
+    let locks = [
+        automatic::runtime_lock().unwrap(),
+        automatic::cpu_runtime_lock().unwrap(),
+    ];
+    let lock = locks
+        .iter()
+        .find(|lock| lock.targets.contains_key(&target))
+        .unwrap();
+    let features = &lock.targets[&target].features;
+    let selected = automatic::select_runtime(&locks, &target, features, &variables(&[])).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let root = automatic::acquire(
+        selected,
+        &target,
+        temporary.path(),
+        Some(Path::new(&archive)),
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        root,
+        automatic::acquire(selected, &target, temporary.path(), None, true).unwrap()
+    );
+    assert!(root.join("bindings.rs").is_file());
+    assert!(!root.join("build").exists());
+}
+
+#[test]
 fn cpu_archives_reuse_the_existing_verified_cache_path() {
     for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
         check_archive_cache(target, "zvec-0.1.154-cpu-r1", json!(["common"]));
     }
+    check_archive_cache(
+        "aarch64-pc-windows-msvc",
+        "zvec-0.1.154-cpu-r2",
+        json!(["common"]),
+    );
 }
 
 #[test]
@@ -271,6 +358,14 @@ fn check_archive_cache(target: &str, release: &str, features: serde_json::Value)
         }}
     }))
     .unwrap();
+    let requested_features = serde_json::from_value(features).unwrap();
+    assert!(automatic::select_runtime(
+        std::slice::from_ref(&lock),
+        target,
+        &requested_features,
+        &variables(&[]),
+    )
+    .is_some());
     let cache = temporary.path().join("cache");
     let root = automatic::acquire(&lock, target, &cache, Some(&archive), true).unwrap();
     assert_eq!(

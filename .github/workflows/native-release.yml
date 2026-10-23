@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       variant:
-        description: Original five SDKs, or only the two additional CPU SDKs
+        description: Original five SDKs, or the three CPU-only SDKs
         type: choice
         options: [default, cpu]
         default: default
@@ -29,7 +29,8 @@ jobs:
         include: >-
           ${{ fromJSON(inputs.variant == 'cpu' &&
           '[{"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04"},
-          {"target":"x86_64-pc-windows-msvc","runner":"windows-2022"}]' ||
+          {"target":"x86_64-pc-windows-msvc","runner":"windows-2022"},
+          {"target":"aarch64-pc-windows-msvc","runner":"windows-11-vs2026-arm"}]' ||
           '[{"target":"aarch64-apple-darwin","runner":"macos-14"},
           {"target":"x86_64-apple-darwin","runner":"macos-15-intel"},
           {"target":"aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm"},
@@ -79,10 +80,14 @@ jobs:
           }
           if (-not (Test-Path $compiler)) { throw 'MSVC 14.38 is missing after installation' }
       - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.target != 'aarch64-pc-windows-msvc'
         with:
           arch: x64
           vsversion: '2022'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        with:
+          arch: arm64
       - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
         if: runner.os == 'Windows' && inputs.variant != 'cpu'
         with:

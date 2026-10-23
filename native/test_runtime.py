@@ -1,6 +1,7 @@
 import io
 import json
 from pathlib import Path
+import re
 import tarfile
 import tempfile
 import unittest
@@ -8,25 +9,49 @@ from unittest.mock import patch
 import runpy
 from fetch import extract
 from runtime import ARCH12, ARCH13, TARGETS, audit_cache, digest, verify, RELEASE, REVISION, recover_incomplete_cmake, verify_source, source_from_build
-from runtime import CPU_TARGETS, CPU_RELEASE, ROOT, primary, sdk_features, package, seal, write_json
+from runtime import CPU_TARGETS, CPU_RELEASE, ROOT, primary, sdk_features, package, seal, write_json, main
 import hashlib
 
 
 class ContractTests(unittest.TestCase):
-    def test_only_two_additional_cpu_variants_and_no_cuda_tool_probe(self):
-        self.assertEqual(set(CPU_TARGETS), {"x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"})
-        self.assertEqual(len(TARGETS) + len(CPU_TARGETS), 7)
+    def test_three_cpu_variants_and_no_cuda_tool_probe(self):
+        self.assertEqual(set(CPU_TARGETS), {"x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc",
+                                          "aarch64-pc-windows-msvc"})
+        self.assertEqual(len(TARGETS) + len(CPU_TARGETS), 8)
         with self.assertRaises(RuntimeError):
             sdk_features("aarch64-apple-darwin", "cpu")
+        with self.assertRaisesRegex(RuntimeError, "requires --variant cpu"):
+            sdk_features("aarch64-pc-windows-msvc")
         for target in CPU_TARGETS:
             self.assertEqual(sdk_features(target, "cpu"), ["common"])
-            self.assertIn("cuda", sdk_features(target))
+            if target in TARGETS:
+                self.assertIn("cuda", sdk_features(target))
             with tempfile.TemporaryDirectory() as temp, \
                     patch("runtime.subprocess.check_output", side_effect=AssertionError("unexpected CUDA probe")), \
                     patch("runtime.cargo_build", side_effect=RuntimeError("stop before compilation")) as build:
                 with self.assertRaisesRegex(RuntimeError, "stop before compilation"):
                     primary(target, Path(temp) / "bundle", Path(temp) / "build", "cpu")
                 self.assertEqual(build.call_args.kwargs["features"], ["common"])
+                if target == "aarch64-pc-windows-msvc":
+                    env = build.call_args.args[2]
+                    self.assertEqual(env["CC"], "clang-cl")
+                    self.assertEqual(env["CXX"], "clang-cl")
+                    self.assertEqual(env["CMAKE_GENERATOR"], "Ninja")
+
+    def test_windows_arm64_cpu_cli_and_existing_ci_matrix(self):
+        target = "aarch64-pc-windows-msvc"
+        with patch("sys.argv", ["runtime.py", "primary", "--target", target, "--variant", "cpu"]), \
+                patch("runtime.primary") as build:
+            main()
+            self.assertEqual(build.call_args.args[0], target)
+            self.assertEqual(build.call_args.args[3], "cpu")
+        workflow = (ROOT / ".github/workflows/native-release.yml").read_text()
+        matrices = [json.loads(value) for value in re.findall(r"'(\[\{.*?\}\])'", workflow, re.S)]
+        self.assertEqual(len(matrices), 2)
+        self.assertEqual({entry["target"] for entry in matrices[0]}, set(CPU_TARGETS))
+        self.assertEqual({entry["target"] for entry in matrices[1]}, set(TARGETS))
+        self.assertEqual(next(entry["runner"] for entry in matrices[0] if entry["target"] == target),
+                         "windows-11-vs2026-arm")
 
     def test_cpu_packaging_and_existing_publisher_prepare_only(self):
         # Synthetic archive contracts, not Linux/Windows native execution.
@@ -106,6 +131,28 @@ class ContractTests(unittest.TestCase):
                          {"x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"})
         self.assertEqual(ARCH13, "75-real;80-real;86-real;89-real;90-real;90-virtual")
         self.assertEqual(ARCH12, "50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real")
+        lock = json.loads((ROOT / "llama-cpp-sys-2/build_support/runtime-lock.json").read_text())
+        self.assertEqual(RELEASE, "zvec-0.1.154-r1")
+        self.assertEqual(lock["release"], RELEASE)
+        for target in ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"):
+            self.assertEqual(lock["targets"][target]["cmake"]["CMAKE_CUDA_ARCHITECTURES"], ARCH13)
+
+    def test_clang_cl_requires_cpp_exceptions_without_changing_other_compilers(self):
+        lock = json.loads((ROOT / "llama-cpp-sys-2/build_support/cpu-runtime-lock.json").read_text())
+        base = dict(lock["targets"]["x86_64-pc-windows-msvc"]["cmake"])
+        base.update(CMAKE_CXX_FLAGS="/MD /O2", CMAKE_CXX_FLAGS_RELEASE="/DNDEBUG")
+        for target in ("aarch64-pc-windows-msvc", "x86_64-pc-windows-msvc"):
+            for compiler in (r"C:\LLVM\bin\clang-cl.exe", "/llvm/bin/clang-cl"):
+                cache = {**base, "CMAKE_CXX_COMPILER": compiler}
+                with self.assertRaisesRegex(RuntimeError, "clang-cl.*requires /EHsc"):
+                    audit_cache(cache, target, variant="cpu")
+                cache["CMAKE_CXX_FLAGS"] += " /EHsc"
+                self.assertEqual(audit_cache(cache, target, variant="cpu")["CMAKE_CXX_FLAGS"],
+                                 "/MD /O2 /EHsc")
+            for compiler in (r"C:\MSVC\bin\cl.exe", "/usr/bin/clang++", "/usr/bin/g++"):
+                cache = {**base, "CMAKE_CXX_COMPILER": compiler}
+                self.assertEqual(audit_cache(cache, target, variant="cpu")["CMAKE_CXX_FLAGS"],
+                                 "/MD /O2")
 
     def test_tar_rejects_traversal_links_duplicates(self):
         for name, kind in [("../outside", tarfile.REGTYPE), ("/absolute", tarfile.REGTYPE),

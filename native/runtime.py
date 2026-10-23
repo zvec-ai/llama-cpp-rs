@@ -13,7 +13,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = "zvec-0.1.154-r1"
-CPU_RELEASE = json.loads((ROOT / "llama-cpp-sys-2/build_support/cpu-runtime-lock.json").read_text(encoding="utf-8"))["release"]
+CPU_RELEASE = "zvec-0.1.154-cpu-r2"
 SOURCE_LOCK = json.loads((ROOT / "llama-cpp-sys-2/build_support/source-lock.json").read_text(encoding="utf-8"))
 REVISION = SOURCE_LOCK["revision"]
 ARCH13 = "75-real;80-real;86-real;89-real;90-real;90-virtual"
@@ -26,14 +26,16 @@ TARGETS = {
     "x86_64-pc-windows-msvc": ["common", "cuda", "dynamic-backends", "dynamic-link"],
 }
 CPU_TARGETS = {target: ["common"] for target in
-               ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc")}
+               ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")}
 
 
 def sdk_features(target, variant="default"):
     if variant == "cpu":
         if target not in CPU_TARGETS:
-            raise RuntimeError("Additional CPU-only SDKs exist only on Linux/Windows x64")
+            raise RuntimeError("CPU-only SDKs support Linux x64 and Windows x64/ARM64")
         return CPU_TARGETS[target]
+    if target not in TARGETS:
+        raise RuntimeError(f"{target} requires --variant cpu")
     return TARGETS[target]
 
 
@@ -110,6 +112,9 @@ def audit_cache(cache, target, fallback=False, variant="default"):
     for key, value in expected.items():
         if cache.get(key) != value:
             raise RuntimeError(f"Build contract mismatch: {key}={cache.get(key)!r}, expected {value}")
+    compiler = cache.get("CMAKE_CXX_COMPILER", "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if compiler in ("clang-cl", "clang-cl.exe") and "/EHsc" not in cache.get("CMAKE_CXX_FLAGS", "").split():
+        raise RuntimeError("Build contract mismatch: clang-cl C++ build requires /EHsc")
     return {key: value for key, value in cache.items()
             if key.startswith(("GGML_", "LLAMA_")) or key in expected
             or key in ("CMAKE_CXX_COMPILER", "CMAKE_CXX_FLAGS", "CMAKE_CXX_FLAGS_RELEASE",
@@ -190,6 +195,9 @@ def primary(target, output, target_dir, variant="default"):
         env["CMAKE_CUDA_ARCHITECTURES"] = ARCH13
     if target == "x86_64-apple-darwin":
         env["MACOSX_DEPLOYMENT_TARGET"] = "14.0"
+    if target == "aarch64-pc-windows-msvc":
+        # The pinned ggml ARM backend rejects MSVC cl.exe; retain MSVC SDK/CRT.
+        env.update(CC="clang-cl", CXX="clang-cl", CMAKE_GENERATOR="Ninja")
     recover_incomplete_cmake(target_dir, target)
     out, _ = cargo_build(target, target_dir, env, features=features)
     source_root = source_from_build(out)
@@ -364,7 +372,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["primary", "fallback", "verify", "external", "package"])
     parser.add_argument("--bundle", type=Path, default=Path("target/native/bundle"))
-    parser.add_argument("--target", choices=TARGETS)
+    parser.add_argument("--target", choices=sorted(TARGETS.keys() | CPU_TARGETS.keys()))
     parser.add_argument("--variant", choices=["default", "cpu"], default="default")
     parser.add_argument("--target-dir", type=Path, default=Path("target/native-build"))
     parser.add_argument("--cuda-root", type=Path, default=Path("/usr/local/cuda"))
