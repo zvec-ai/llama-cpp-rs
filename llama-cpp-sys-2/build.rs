@@ -671,6 +671,10 @@ fn main() {
 
         if matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc)) {
             common_wrapper_build.flag("/std:c++17");
+            if common_wrapper_build.get_compiler().is_like_clang_cl() {
+                // This wrapper catches C++ exceptions at the FFI boundary.
+                common_wrapper_build.flag("/EHsc");
+            }
         }
 
         // When static-stdcxx is enabled on Android, suppress the cc crate's automatic
