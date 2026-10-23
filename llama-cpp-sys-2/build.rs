@@ -656,6 +656,10 @@ fn main() {
 
     debug_log!("Bindings Created");
 
+    // Keep cc-built wrappers and the CMake C++ libraries on the same model.
+    let clang_cl_cpp = matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc))
+        && cc::Build::new().cpp(true).get_compiler().is_like_clang_cl();
+
     if cfg!(feature = "common") {
         let mut common_wrapper_build = cc::Build::new();
         common_wrapper_build
@@ -671,7 +675,7 @@ fn main() {
 
         if matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc)) {
             common_wrapper_build.flag("/std:c++17");
-            if common_wrapper_build.get_compiler().is_like_clang_cl() {
+            if clang_cl_cpp {
                 // This wrapper catches C++ exceptions at the FFI boundary.
                 common_wrapper_build.flag("/EHsc");
             }
@@ -689,6 +693,9 @@ fn main() {
     // Build with Cmake
 
     let mut config = Config::new(&llama_src);
+    if clang_cl_cpp {
+        config.cxxflag("/EHsc");
+    }
     // Archive caches may live below the fork checkout. Do not report the
     // fork's Git revision as the native source's build metadata.
     config.env("GIT_CEILING_DIRECTORIES", llama_src.parent().unwrap());
@@ -1161,6 +1168,9 @@ fn main() {
 
         if matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc)) {
             mtmd_build.flag("/std:c++17");
+            if clang_cl_cpp {
+                mtmd_build.flag("/EHsc");
+            }
         }
 
         // When static-stdcxx is enabled on Android, suppress the cc crate's automatic

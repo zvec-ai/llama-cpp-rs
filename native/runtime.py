@@ -112,6 +112,9 @@ def audit_cache(cache, target, fallback=False, variant="default"):
     for key, value in expected.items():
         if cache.get(key) != value:
             raise RuntimeError(f"Build contract mismatch: {key}={cache.get(key)!r}, expected {value}")
+    compiler = cache.get("CMAKE_CXX_COMPILER", "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if compiler in ("clang-cl", "clang-cl.exe") and "/EHsc" not in cache.get("CMAKE_CXX_FLAGS", "").split():
+        raise RuntimeError("Build contract mismatch: clang-cl C++ build requires /EHsc")
     return {key: value for key, value in cache.items()
             if key.startswith(("GGML_", "LLAMA_")) or key in expected
             or key in ("CMAKE_CXX_COMPILER", "CMAKE_CXX_FLAGS", "CMAKE_CXX_FLAGS_RELEASE",

@@ -156,6 +156,23 @@ class ContractTests(unittest.TestCase):
                             "LLAMA_BUILD_COMMON": "OFF", "GGML_CPU": "OFF"}
                 self.assertEqual(audit_cache(fallback, target, fallback=True)["CMAKE_CUDA_ARCHITECTURES"], ARCH12)
 
+    def test_clang_cl_requires_cpp_exceptions_without_changing_other_compilers(self):
+        lock = json.loads((ROOT / "llama-cpp-sys-2/build_support/cpu-runtime-lock.json").read_text())
+        base = dict(lock["targets"]["x86_64-pc-windows-msvc"]["cmake"])
+        base.update(CMAKE_CXX_FLAGS="/MD /O2", CMAKE_CXX_FLAGS_RELEASE="/DNDEBUG")
+        for target in ("aarch64-pc-windows-msvc", "x86_64-pc-windows-msvc"):
+            for compiler in (r"C:\LLVM\bin\clang-cl.exe", "/llvm/bin/clang-cl"):
+                cache = {**base, "CMAKE_CXX_COMPILER": compiler}
+                with self.assertRaisesRegex(RuntimeError, "clang-cl.*requires /EHsc"):
+                    audit_cache(cache, target, variant="cpu")
+                cache["CMAKE_CXX_FLAGS"] += " /EHsc"
+                self.assertEqual(audit_cache(cache, target, variant="cpu")["CMAKE_CXX_FLAGS"],
+                                 "/MD /O2 /EHsc")
+            for compiler in (r"C:\MSVC\bin\cl.exe", "/usr/bin/clang++", "/usr/bin/g++"):
+                cache = {**base, "CMAKE_CXX_COMPILER": compiler}
+                self.assertEqual(audit_cache(cache, target, variant="cpu")["CMAKE_CXX_FLAGS"],
+                                 "/MD /O2")
+
     def test_tar_rejects_traversal_links_duplicates(self):
         for name, kind in [("../outside", tarfile.REGTYPE), ("/absolute", tarfile.REGTYPE),
                            ("link", tarfile.SYMTYPE), ("hard", tarfile.LNKTYPE),
