@@ -76,6 +76,11 @@ fn cpu_archives_reuse_the_existing_verified_cache_path() {
     for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
         check_archive_cache(target, "zvec-0.1.154-cpu-r1", json!(["common"]));
     }
+    check_archive_cache(
+        "aarch64-pc-windows-msvc",
+        "zvec-0.1.154-cpu-r2",
+        json!(["common"]),
+    );
 }
 
 #[test]
@@ -271,6 +276,14 @@ fn check_archive_cache(target: &str, release: &str, features: serde_json::Value)
         }}
     }))
     .unwrap();
+    let requested_features = serde_json::from_value(features).unwrap();
+    assert!(automatic::select_runtime(
+        std::slice::from_ref(&lock),
+        target,
+        &requested_features,
+        &variables(&[]),
+    )
+    .is_some());
     let cache = temporary.path().join("cache");
     let root = automatic::acquire(&lock, target, &cache, Some(&archive), true).unwrap();
     assert_eq!(

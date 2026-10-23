@@ -26,9 +26,14 @@ changes can reuse the pinned native SDK.
 | x86_64-pc-windows-msvc | shared core + CPU variants + CUDA plugins | common, cuda, dynamic-link, dynamic-backends |
 | x86_64-unknown-linux-gnu | static, CPU-only | common |
 | x86_64-pc-windows-msvc | static, CPU-only | common |
+| aarch64-pc-windows-msvc | static, CPU-only (pending publication/pins) | common |
 
-Only the two x64 targets gain an additional CPU-only archive (seven SDKs total).
-They use `zvec-0.1.154-cpu-r1` and `build_support/cpu-runtime-lock.json`; existing
+The CPU-only matrix includes Linux x64, Windows x64 and Windows ARM64 (eight
+SDK configurations total). The next CPU release is `zvec-0.1.154-cpu-r2`; the
+embedded `build_support/cpu-runtime-lock.json` still pins the two published x64
+SDKs from `zvec-0.1.154-cpu-r1` until new artifacts pass acceptance. Windows ARM64
+uses source mode in `auto` until its verified archive/manifest digests are imported;
+explicit `prebuilt` fails rather than choosing an x64 archive. Existing
 archives and CUDA loading/fallback logic are unchanged. Exact features and native
 options select the archive before any download, using the existing verified cache.
 The CPU lock pins the published Linux/Windows archives after real builds,
@@ -62,7 +67,7 @@ NVIDIA driver/runtime libraries are supplied by the deployment environment.
 
 Pin the fork Git commit in the consuming repository. Archive/manifest digests
 and native configuration are embedded in the sys crate's
-`build_support/runtime-lock.json` (plus `cpu-runtime-lock.json` for x64 CPU);
+`build_support/runtime-lock.json` (plus `cpu-runtime-lock.json` for CPU-only SDKs);
 consumers do not maintain a second lock file
 or build wrapper. Do not track a moving branch or fetch a remote checksums file
 as the source of trust on every build.
@@ -188,13 +193,16 @@ existing delay-load setup). This step does not change zg's loader or packaging.
 `native-release.yml` runs only via `workflow_dispatch`; select `prebuilt/0.1.154`
 when publishing. Ordinary pushes do not rebuild or republish native SDKs.
 Its default variant retains the original five-platform and CUDA gates. Select
-`variant=cpu` to build only the two CPU-only SDKs on ordinary hosted runners,
+`variant=cpu` to build the three CPU-only SDKs on ordinary hosted runners,
 without CUDA toolchain setup or GPU jobs, reusing the same packaging, external
 consumer, real CPU inference and audit steps. This defaults to preparing metadata;
 publication additionally requires `publish_cpu=true`. No existing release is
 overwritten. Review and import the resulting `cpu-runtime-lock.json` into the sys
 crate only after actual native acceptance; consumers never trust a live remote index.
-Locally, `runtime.py primary --target <x64-target> --variant cpu` builds one CPU
+Windows ARM64 uses the native `windows-11-vs2026-arm` runner, `clang-cl`/Ninja
+and ARM64 MSVC SDK/CRT (the pinned ggml rejects `cl.exe` for ARM). It runs the
+same external consumer and real CPU embedding checks, without CUDA.
+Locally, `runtime.py primary --target <cpu-target> --variant cpu` builds one CPU
 SDK, and `publish.py --assets <merged-assets> --variant cpu --prepare-only`
 generates its pins without GitHub calls. These are maintainer tools, not ZG wrappers.
 All five native builds and real CPU inference tests run on ordinary hosted

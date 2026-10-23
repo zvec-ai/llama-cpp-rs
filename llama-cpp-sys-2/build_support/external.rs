@@ -7,7 +7,12 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
-const RELEASES: &[&str] = &["zvec-0.1.154-r1", "zvec-0.1.154-r2", "zvec-0.1.154-cpu-r1"];
+const RELEASES: &[&str] = &[
+    "zvec-0.1.154-r1",
+    "zvec-0.1.154-r2",
+    "zvec-0.1.154-cpu-r1",
+    "zvec-0.1.154-cpu-r2",
+];
 pub(super) const REVISION: &str = "5f55650a78f92aff4d48d671423e888fac0469ff";
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 

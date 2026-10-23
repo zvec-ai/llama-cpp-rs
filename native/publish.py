@@ -46,7 +46,7 @@ index = args.assets / lock_name
 index.write_text(json.dumps({"release": release, "source_commit": os.environ["GITHUB_SHA"],
                              "targets": manifests}, indent=2) + "\n", encoding="utf-8")
 notes = args.assets / "release-notes.md"
-coverage = ("Linux x64 and Windows x64 passed real CPU embedding tests using a separately rebuilt\n"
+coverage = ("Linux x64, Windows x64 and Windows ARM64 passed real CPU embedding tests using a separately rebuilt\n"
             "external-mode Rust consumer. Static common/CPU libraries only; no CUDA payload.\n" if cpu else
             "Five native targets passed real CPU embedding tests using a separately rebuilt\n"
             "external-mode Rust consumer. Linux x64 and Windows x64 additionally passed\n"
