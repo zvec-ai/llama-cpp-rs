@@ -1,11 +1,11 @@
 {
-  "release": "zvec-0.1.154-r1",
-  "source_commit": "ce17a1361dc92fe1f5adf595b3712d9a42950409",
+  "release": "zvec-0.1.154-r2",
+  "source_commit": "3edf3e0e92e512b989d5a8afc422cdb7ead7bd71",
   "targets": {
     "aarch64-apple-darwin": {
-      "archive": "llama-cpp-runtime-zvec-0.1.154-r1-aarch64-apple-darwin.tar.gz",
-      "sha256": "564fbe6eed161f35ce4bafcdf406c733cfc40ad2b01a175b214b046c92320cf9",
-      "manifest_sha256": "a7c353c1167f63829cc335dc65830a9cfed25e3b127bf7ee4104fcd5bbbecdb3",
+      "archive": "llama-cpp-runtime-zvec-0.1.154-r2-aarch64-apple-darwin.tar.gz",
+      "sha256": "d75e00b52f01b9c21fdf97f2eb50dad5020b82cb19598b201ad742c9c23f62bf",
+      "manifest_sha256": "06705120870a139655527046fcef99be77633514460f658795c47fd34810133b",
       "features": [
         "common",
         "metal"
@@ -166,9 +166,9 @@
       }
     },
     "x86_64-apple-darwin": {
-      "archive": "llama-cpp-runtime-zvec-0.1.154-r1-x86_64-apple-darwin.tar.gz",
-      "sha256": "d656b91ab15bb96ea746c925765cb8548a81be8b301f5b56d23b3c815f056a5f",
-      "manifest_sha256": "ad4f3de4727b4dec735dc974879ecc416a6794305ffeae2fc1853b22359c919c",
+      "archive": "llama-cpp-runtime-zvec-0.1.154-r2-x86_64-apple-darwin.tar.gz",
+      "sha256": "bfed91e30063a6eeb17e518751aef95e426f5b2b50603c2d3ff30ff34d84dbb4",
+      "manifest_sha256": "1232945c2519f16410beb78c2ee6e0def4f4aa54341c876cc3aa16e5985cf6ec",
       "features": [
         "common"
       ],
@@ -327,9 +327,9 @@
       }
     },
     "aarch64-unknown-linux-gnu": {
-      "archive": "llama-cpp-runtime-zvec-0.1.154-r1-aarch64-unknown-linux-gnu.tar.gz",
-      "sha256": "e0c5c7c542c06f8fd8221bfa3d6068f390f2831f70abf04cda4c4a45a817281d",
-      "manifest_sha256": "13ed575533f15c133a59109df0e41177ffeb02c9bdde262dc86581fae6e7e970",
+      "archive": "llama-cpp-runtime-zvec-0.1.154-r2-aarch64-unknown-linux-gnu.tar.gz",
+      "sha256": "1fed5fedde992c792af6d127783adf59f2a6539548225176844cb726dca7af5b",
+      "manifest_sha256": "6ae3e0b697c8ecd11145ec8986bd771a51ab37c081a33b6af534f2bb1142416a",
       "features": [
         "common"
       ],
@@ -487,9 +487,9 @@
       }
     },
     "x86_64-unknown-linux-gnu": {
-      "archive": "llama-cpp-runtime-zvec-0.1.154-r1-x86_64-unknown-linux-gnu.tar.gz",
-      "sha256": "f695815a87cf09ca64eb025f7e7f2f27452a86ede41702724ee895c9c2317b09",
-      "manifest_sha256": "db81687fc94f7895d75aa3e1e840cf545324efcc22ccbd1653b84f126dc155bc",
+      "archive": "llama-cpp-runtime-zvec-0.1.154-r2-x86_64-unknown-linux-gnu.tar.gz",
+      "sha256": "10941e0a272faf0f02df4fc53f586879e0c673fdc948ceb7a62a5b1c9e3ef484",
+      "manifest_sha256": "b26f945e917376c331c7ec6cb271ec064e15cdbc4b3642d5ec719b84d85bc41d",
       "features": [
         "common",
         "cuda",
@@ -499,7 +499,7 @@
       "cmake": {
         "BUILD_SHARED_LIBS": "ON",
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CUDA_ARCHITECTURES": "75-real;80-real;86-real;89-real;90-real;90-virtual",
+        "CMAKE_CUDA_ARCHITECTURES": "75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real",
         "CMAKE_CXX_FLAGS": " -ffunction-sections -fdata-sections -fPIC -m64 -w",
         "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
         "GGML_ACCELERATE": "ON",
@@ -650,9 +650,9 @@
       }
     },
     "x86_64-pc-windows-msvc": {
-      "archive": "llama-cpp-runtime-zvec-0.1.154-r1-x86_64-pc-windows-msvc.tar.gz",
-      "sha256": "a76999ee6bb2347fd8922216463ab7df5e631b8692c4b1ed9a2a357c0bf5bafa",
-      "manifest_sha256": "853ea434f18161067306d6ff8d97a02132e7c0604c628253782b799dc12daadf",
+      "archive": "llama-cpp-runtime-zvec-0.1.154-r2-x86_64-pc-windows-msvc.tar.gz",
+      "sha256": "b8ec49726c28f87881d5fb75d6115b47c316a363ca3ecf505522ba63a1c72b08",
+      "manifest_sha256": "ebcc25b62c38d8eb8f2640049e730c62585235339bad76ac29ae929e1c7f711b",
       "features": [
         "common",
         "cuda",
@@ -662,7 +662,7 @@
       "cmake": {
         "BUILD_SHARED_LIBS": "ON",
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CUDA_ARCHITECTURES": "75-real;80-real;86-real;89-real;90-real;90-virtual",
+        "CMAKE_CUDA_ARCHITECTURES": "75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real",
         "CMAKE_CXX_FLAGS": " /O2 /DNDEBUG /Ob2 -nologo -MD -Brepro -W0",
         "CMAKE_CXX_FLAGS_RELEASE": " /O2 /DNDEBUG /Ob2 -nologo -MD -Brepro -W0",
         "GGML_ACCELERATE": "ON",

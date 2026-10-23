@@ -12,8 +12,8 @@ No crates.io packages are published.
 Baseline: `zvec-ai/zvec-grep`, branch `codex/cuda-static-linking`, commit
 `cc8fa72938db42b648687fccd99b088e94520186`.
 Native source: llama.cpp `5f55650a78f92aff4d48d671423e888fac0469ff`.
-Next bundle release: `zvec-0.1.154-r2`. The embedded runtime lock still pins
-`zvec-0.1.154-r1` until the new native artifacts have been built and verified.
+The embedded runtime locks pin the published and verified
+`zvec-0.1.154-r2` and `zvec-0.1.154-cpu-r2` SDKs.
 Native ABI/configuration changes require a new bundle revision; bootstrap-only
 changes can reuse the pinned native SDK.
 
@@ -26,20 +26,19 @@ changes can reuse the pinned native SDK.
 | x86_64-pc-windows-msvc | shared core + CPU variants + CUDA plugins | common, cuda, dynamic-link, dynamic-backends |
 | x86_64-unknown-linux-gnu | static, CPU-only | common |
 | x86_64-pc-windows-msvc | static, CPU-only | common |
-| aarch64-pc-windows-msvc | static, CPU-only (pending publication/pins) | common |
+| aarch64-pc-windows-msvc | static, CPU-only | common |
 
 The CPU-only matrix includes Linux x64, Windows x64 and Windows ARM64 (eight
-SDK configurations total). The next CPU release is `zvec-0.1.154-cpu-r2`; the
-embedded `build_support/cpu-runtime-lock.json` still pins the two published x64
-SDKs from `zvec-0.1.154-cpu-r1` until new artifacts pass acceptance. Windows ARM64
-uses source mode in `auto` until its verified archive/manifest digests are imported;
-explicit `prebuilt` fails rather than choosing an x64 archive. Existing
+SDK configurations total). The embedded `build_support/cpu-runtime-lock.json`
+pins all three targets from `zvec-0.1.154-cpu-r2`. Windows ARM64 selects its
+own static CPU SDK in both `auto` and `prebuilt`; enabling CUDA or overriding
+the source compiler does not silently select a CPU or x64 archive. Existing
 archives and CUDA loading/fallback logic are unchanged. Exact features and native
 options select the archive before any download, using the existing verified cache.
 The CPU lock pins the published Linux/Windows archives after real builds,
 external-consumer linkage and CPU inference passed in
-[run 39413216584](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/39413216584).
-Matching x64 `{common}` builds use only the CPU archive in `auto` and `prebuilt`;
+[run 39929930003](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/39929930003).
+Matching `{common}` builds on these three targets use only the CPU archive in `auto` and `prebuilt`;
 they never download a CUDA archive instead. The same run also verified the
 Windows source-build C1083/header-path fix included in `5abf435`.
 
@@ -53,10 +52,9 @@ older glibc baseline. MSVC uses the dynamic CRT.
 
 CUDA 13.1.1 primary build architectures (matching node-llama-cpp's non-native defaults):
 `75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real`.
-The currently pinned `zvec-0.1.154-r1` SDK still records its original
-`75-real;80-real;86-real;89-real;90-real;90-virtual` configuration. The new
-configuration requires a new bundle revision; do not relabel the existing
-release or change its locked metadata/digests before rebuilding and verifying it.
+The pinned `zvec-0.1.154-r2` SDK records this configuration and passed CPU/GPU
+checks in [run 39764251695](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/39764251695).
+The original `zvec-0.1.154-r1` artifacts and their metadata remain unchanged.
 CUDA 12.4.1 fallback architectures:
 `50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real`.
 The fallback is **only** `lib/cuda12/ggml-cuda.dll` or
