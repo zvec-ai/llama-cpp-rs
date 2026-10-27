@@ -1,0 +1,4 @@
+**
+!native/
+!native/Dockerfile
+!native/build-requirements.txt

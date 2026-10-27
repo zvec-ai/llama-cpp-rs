@@ -8,6 +8,7 @@ import argparse
 from pathlib import Path, PurePosixPath
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -28,7 +29,19 @@ def extract(archive, destination):
             total += member.size
             if total > 8 * 1024**3 or len(names) > 10000:
                 raise RuntimeError("Native archive exceeds extraction limits")
-        tar.extractall(destination, filter="data")
+        # Python 3.8 on Ubuntu 20.04 has no tar extraction filters. Write only
+        # the regular files validated above, never archive links or metadata.
+        destination.mkdir(parents=True, exist_ok=True)
+        for member in tar.getmembers():
+            output = destination / member.name
+            try:
+                output.resolve().relative_to(destination.resolve())
+            except ValueError:
+                raise RuntimeError(f"Unsafe archive destination: {member.name}") from None
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with tar.extractfile(member) as source, output.open("xb") as target:
+                shutil.copyfileobj(source, target)
+            output.chmod(member.mode & 0o777)
 
 
 def main():

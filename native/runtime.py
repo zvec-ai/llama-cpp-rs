@@ -171,7 +171,7 @@ def verify_source(root):
 
 
 def source_from_build(out):
-    metadata = dict(line.removeprefix("cargo:").split("=", 1)
+    metadata = dict(line[len("cargo:"):].split("=", 1)
                     for line in (out.parent / "output").read_text(encoding="utf-8").splitlines()
                     if line.startswith(("cargo:source_dir=", "cargo:source_revision=")))
     if metadata.get("source_revision") != REVISION or not metadata.get("source_dir"):
@@ -295,7 +295,12 @@ def verify(output):
         raise RuntimeError("Wrong release/ABI")
     for name, expected in manifest["files"].items():
         path = output / name
-        if not path.resolve().is_relative_to(output.resolve()) or path.is_symlink() or digest(path) != expected:
+        # Ubuntu 20.04 supplies Python 3.8 (before Path.is_relative_to).
+        try:
+            path.resolve().relative_to(output.resolve())
+        except ValueError:
+            raise RuntimeError(f"Invalid payload path: {name}") from None
+        if path.is_symlink() or digest(path) != expected:
             raise RuntimeError(f"Invalid payload/checksum: {name}")
     actual = {p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file() and p.name != "manifest.json"}
     if actual != manifest["files"].keys():

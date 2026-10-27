@@ -50,8 +50,32 @@ default features even when its own defaults are disabled, exactly as in zg.
 Apple backend defaults, including embedded Metal shaders and Accelerate, are
 left to the pinned upstream build. Intel macOS sets deployment target 14.0,
 matching zg. OpenMP is disabled. Release native builds are used for both debug
-and release Rust consumers. Linux GNU builds use Ubuntu 24.04; do not claim an
-older glibc baseline. MSVC uses the dynamic CRT.
+and release Rust consumers. Linux GNU release builds and their separately linked
+test consumers use the pinned Ubuntu 20.04 image (glibc 2.31), on both x64 and
+ARM64. The host Actions runner does not supply the compiler or sysroot. MSVC uses
+the dynamic CRT.
+
+The Linux acceptance gate inspects version requirements of every shared library
+(including both CUDA plugins) and the external-mode consumer. It rejects imports
+newer than `GLIBC_2.31` or `GLIBCXX_3.4.28`, and retains `linux-abi.json` plus
+`native-imports.txt` as evidence. The linked consumer also covers static CPU SDKs.
+Real CPU embedding runs in a clean Ubuntu 20.04 container with its own system
+libraries and no CUDA toolkit or NVIDIA libraries. CUDA offload remains covered
+by the existing GPU-runner tests; host NVIDIA driver/runtime requirements are
+separate from the SDK's glibc ceiling.
+
+`native/Dockerfile` has `cpu`, `cuda13` and `cuda12` targets. All compile against
+Ubuntu 20.04 headers and libraries. CUDA 13 has no official Ubuntu 20.04 image,
+so only its toolkit is copied from the pinned Rocky Linux 8 image; that image's
+system libraries are never copied. CUDA 12 uses the pinned Ubuntu 20.04 toolkit.
+CMake is installed from hash-pinned wheels because Ubuntu 20.04's CMake 3.16
+predates CUDA 13 support. CUDA SDKs use Clang 16 for the newer CPU dispatch
+instructions, retaining Ubuntu 20.04's libstdc++ and glibc. The workflow's
+`linux_only` input validates the Linux targets and skips publication.
+
+These gates apply to newly built artifacts. The embedded runtime locks still
+refer to the previously published Ubuntu 24.04 SDKs until verified replacements
+are published under new immutable release names and their digests are updated.
 
 CUDA 13.1.1 primary build architectures, unchanged from the pinned r1 SDK:
 `75-real;80-real;86-real;89-real;90-real;90-virtual`.

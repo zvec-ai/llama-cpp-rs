@@ -12,6 +12,10 @@ on:
         description: Publish the CPU release after native checks (otherwise prepare hashes only)
         type: boolean
         default: false
+      linux_only:
+        description: Validate Linux SDKs only, without publishing a release
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,7 +31,10 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(inputs.variant == 'cpu' &&
+          ${{ fromJSON(inputs.linux_only && (inputs.variant == 'cpu' &&
+          '[{"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04"}]' ||
+          '[{"target":"aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm"},
+          {"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04"}]') || inputs.variant == 'cpu' &&
           '[{"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04"},
           {"target":"x86_64-pc-windows-msvc","runner":"windows-2022"},
           {"target":"aarch64-pc-windows-msvc","runner":"windows-11-vs2026-arm"}]' ||
@@ -63,7 +70,7 @@ jobs:
           console.log(`cores=${cores}, RAM=${memoryGiB.toFixed(1)} GiB, jobs=${jobs}`);
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake ninja-build patchelf
+        run: sudo apt-get update && sudo apt-get install -y binutils
       - name: Install MSVC 14.38 for the CUDA 12 fallback
         if: runner.os == 'Windows' && inputs.variant != 'cpu'
         shell: powershell
@@ -111,27 +118,35 @@ jobs:
           path: |
             ~/.cargo/registry/
             target/native-build/
-          key: ${{ inputs.variant == 'cpu' && 'native-cpu-v1' || 'native-v1' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
-          restore-keys: ${{ inputs.variant == 'cpu' && 'native-cpu-v1' || 'native-v1' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}-
+          key: ${{ inputs.variant == 'cpu' && 'native-cpu-v2' || 'native-v2' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'native/Dockerfile', 'native/build-requirements.txt') }}-${{ github.sha }}
+          restore-keys: ${{ inputs.variant == 'cpu' && 'native-cpu-v2' || 'native-v2' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'native/Dockerfile', 'native/build-requirements.txt') }}-
       - name: Test packaging contract
         run: python -m unittest discover -s native -p 'test_*.py' -v
       - name: Build primary through the upstream Cargo build script
-        if: matrix.target != 'x86_64-unknown-linux-gnu' || inputs.variant == 'cpu'
+        if: runner.os != 'Linux'
         run: python native/runtime.py primary --target ${{ matrix.target }} --variant ${{ inputs.variant }}
-      - name: Build Linux CUDA primary in the baseline pinned image
-        if: matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu'
+      - name: Build Linux SDK and consumer images on Ubuntu 20.04
+        if: runner.os == 'Linux'
+        env:
+          BUILDER: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu' && 'cuda13' || 'cpu' }}
         run: |
-          docker build -f native/Dockerfile -t llama-native-cuda13 .
+          docker build --target cpu -f native/Dockerfile -t llama-native-cpu .
+          docker build --target "$BUILDER" -f native/Dockerfile -t llama-native-primary .
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" \
+            llama-native-cpu python3 -m unittest discover -s native -p 'test_*.py' -v
+      - name: Build Linux primary against glibc 2.31
+        if: runner.os == 'Linux'
+        run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CARGO_BUILD_JOBS -e CMAKE_BUILD_PARALLEL_LEVEL \
-            llama-native-cuda13 python3 native/runtime.py primary --target x86_64-unknown-linux-gnu
+            llama-native-primary python3 native/runtime.py primary --target ${{ matrix.target }} --variant ${{ inputs.variant }}
       - name: Build Linux CUDA 12.4 fallback only
         if: matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu'
         run: |
-          docker build -f native/Dockerfile --build-arg CUDA_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:da6791294b0b04d7e65d87b7451d6f2390b4d36225ab0701ee7dfec5769829f5 -t llama-native-cuda12 .
+          docker build --target cuda12 -f native/Dockerfile -t llama-native-cuda12 .
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CMAKE_BUILD_PARALLEL_LEVEL \
             llama-native-cuda12 python3 native/runtime.py fallback
       - name: Restore output ownership
-        if: always() && matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu'
+        if: always() && runner.os == 'Linux'
         run: sudo chown -R "$(id -u):$(id -g)" target
       - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
         if: runner.os == 'Windows' && inputs.variant != 'cpu'
@@ -161,22 +176,37 @@ jobs:
       - name: Extract the exact release archive
         run: python native/unpack.py --artifacts target/dist --output target/relocated/bundle
       - name: Rebuild a Rust consumer without bindgen or native compilation
+        if: runner.os != 'Linux'
         run: python native/runtime.py external --bundle target/relocated/bundle --target-dir target/external-consumer
+      - name: Rebuild the Linux consumer on Ubuntu 20.04 without a CUDA toolkit
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CARGO_BUILD_JOBS \
+            llama-native-cpu python3 native/runtime.py external --bundle target/relocated/bundle --target-dir target/external-consumer
+          sudo chown -R "$(id -u):$(id -g)" target
       - uses: actions/cache@v5
         with:
           path: target/models/
           key: native-embeddinggemma-q8-b5ce9d77
       - name: Real CPU embedding from the relocated SDK
+        if: runner.os != 'Linux'
         run: python native/e2e.py --bundle target/relocated/bundle --mode cpu
-      - name: Linux inference without any NVIDIA libraries installed
-        if: matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu'
+      - name: Real Linux CPU inference on clean Ubuntu 20.04
+        if: runner.os == 'Linux'
+        env:
+          CUDA_SDK: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu' && '1' || '0' }}
         run: |
-          docker run --rm -v "$GITHUB_WORKSPACE:/work" ubuntu:24.04 bash -euc '
-            apt-get update -qq && apt-get install -y --no-install-recommends python3 libstdc++6 >/dev/null
-            ldd /work/target/relocated/bundle/lib/libggml-cuda.so | grep -Eq "lib(cuda|cudart|cublas).*not found"
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CUDA_SDK \
+            ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214 bash -euc '
+            apt-get update -qq && apt-get install -y --no-install-recommends python3 curl ca-certificates libstdc++6 >/dev/null
+            test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.31"
+            if [ "$CUDA_SDK" = 1 ]; then
+              ldd /work/target/relocated/bundle/lib/libggml-cuda.so | grep -Eq "lib(cuda|cudart|cublas).*not found"
+            fi
             cd /work && python3 native/e2e.py --bundle target/relocated/bundle --mode cpu --logs target/evidence/no-cuda
           '
-      - name: Audit dynamic dependencies
+          sudo chown -R "$(id -u):$(id -g)" target
+      - name: Audit dynamic dependencies and Linux glibc 2.31 ceiling
         run: python native/audit.py --bundle target/relocated/bundle --logs target/evidence
       - uses: actions/upload-artifact@v7
         with:
@@ -246,7 +276,7 @@ jobs:
 
   cuda-windows:
     needs: build
-    if: inputs.variant != 'cpu'
+    if: inputs.variant != 'cpu' && !inputs.linux_only
     runs-on:
       group: gpu-runners
       labels: gpu-windows-t4
@@ -310,7 +340,7 @@ jobs:
   release:
     needs: [build, cuda-linux, cuda-windows]
     if: >-
-      always() && !cancelled() && github.ref == 'refs/heads/prebuilt/0.1.154' &&
+      always() && !cancelled() && !inputs.linux_only && github.ref == 'refs/heads/prebuilt/0.1.154' &&
       needs.build.result == 'success' &&
       (inputs.variant == 'cpu' || (needs.cuda-linux.result == 'success' && needs.cuda-windows.result == 'success'))
     runs-on: ubuntu-24.04

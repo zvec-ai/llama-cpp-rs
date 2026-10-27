@@ -47,7 +47,11 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(build.call_args.args[3], "cpu")
         workflow = (ROOT / ".github/workflows/native-release.yml").read_text()
         matrices = [json.loads(value) for value in re.findall(r"'(\[\{.*?\}\])'", workflow, re.S)]
-        self.assertEqual(len(matrices), 2)
+        self.assertEqual(len(matrices), 4)
+        self.assertEqual({entry["target"] for entry in matrices[0]}, {"x86_64-unknown-linux-gnu"})
+        self.assertEqual({entry["target"] for entry in matrices[1]},
+                         {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"})
+        matrices = matrices[2:]
         self.assertEqual({entry["target"] for entry in matrices[0]}, set(CPU_TARGETS))
         self.assertEqual({entry["target"] for entry in matrices[1]}, set(TARGETS))
         self.assertEqual(next(entry["runner"] for entry in matrices[0] if entry["target"] == target),
