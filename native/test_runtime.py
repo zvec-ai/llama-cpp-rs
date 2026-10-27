@@ -11,9 +11,24 @@ from fetch import extract
 from runtime import ARCH12, ARCH13, TARGETS, audit_cache, digest, verify, RELEASE, REVISION, recover_incomplete_cmake, verify_source, source_from_build
 from runtime import CPU_TARGETS, CPU_RELEASE, ROOT, primary, sdk_features, package, seal, write_json, main
 import hashlib
+import fetch
 
 
 class ContractTests(unittest.TestCase):
+    def test_manual_fetch_uses_the_target_download_release(self):
+        for target, release in [("x86_64-unknown-linux-gnu", "zvec-0.1.154-glibc-2.31-r1"),
+                                ("aarch64-apple-darwin", RELEASE)]:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temp:
+                command = ["fetch.py", "--target", target, "--sha256", "a" * 64,
+                           "--output", str(Path(temp) / "bundle")]
+                with patch("sys.argv", command), \
+                        patch("fetch.subprocess.run", side_effect=RuntimeError("download intercepted")) as download:
+                    with self.assertRaisesRegex(RuntimeError, "download intercepted"):
+                        fetch.main()
+                url = download.call_args.args[0][-1]
+                self.assertIn(f"/releases/download/{release}/", url)
+                self.assertTrue(url.endswith(f"-{target}.tar.gz"))
+
     def test_three_cpu_variants_and_no_cuda_tool_probe(self):
         self.assertEqual(set(CPU_TARGETS), {"x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc",
                                           "aarch64-pc-windows-msvc"})

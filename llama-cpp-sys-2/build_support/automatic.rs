@@ -19,8 +19,18 @@ pub struct RuntimeLock {
     pub targets: BTreeMap<String, Bundle>,
 }
 
+impl RuntimeLock {
+    pub fn release_for(&self, target: &str) -> Result<&str> {
+        let bundle = self.targets.get(target).ok_or("no SDK for target")?;
+        Ok(bundle.release.as_deref().unwrap_or(&self.release))
+    }
+}
+
 #[derive(Deserialize)]
 pub struct Bundle {
+    // A platform-only release can promote verified archives byte-for-byte.
+    #[serde(default)]
+    pub release: Option<String>,
     pub archive: String,
     pub sha256: String,
     pub manifest_sha256: String,
@@ -348,13 +358,14 @@ pub fn acquire(
     let archive = if let Some(archive) = archive {
         archive
     } else {
+        let release = lock.release_for(target)?;
         let url = format!(
             "https://github.com/zvec-ai/llama-cpp-rs/releases/download/{}/{}",
-            lock.release, bundle.archive
+            release, bundle.archive
         );
         println!(
             "cargo:warning=Downloading pinned llama.cpp SDK {} for {target}",
-            lock.release
+            release
         );
         let status = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" })
             .args([

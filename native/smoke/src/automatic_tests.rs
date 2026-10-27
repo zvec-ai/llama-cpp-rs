@@ -19,6 +19,61 @@ fn variables(values: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 #[test]
+fn glibc231_download_release_applies_only_to_linux() {
+    for lock in [
+        automatic::runtime_lock().unwrap(),
+        automatic::cpu_runtime_lock().unwrap(),
+    ] {
+        for target in lock.targets.keys() {
+            let expected = if target.ends_with("linux-gnu") {
+                "zvec-0.1.154-glibc-2.31-r1"
+            } else {
+                &lock.release
+            };
+            assert_eq!(lock.release_for(target).unwrap(), expected);
+        }
+        assert!(lock.release_for("unknown-target").is_err());
+    }
+}
+
+#[test]
+#[ignore = "requires LLAMA_CPP_TEST_LINUX_ASSETS containing the promoted SDK archives"]
+fn promoted_linux_archives_match_embedded_pins() {
+    let assets = std::env::var_os("LLAMA_CPP_TEST_LINUX_ASSETS").unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    for lock in [
+        automatic::runtime_lock().unwrap(),
+        automatic::cpu_runtime_lock().unwrap(),
+    ] {
+        for (target, bundle) in &lock.targets {
+            if !target.ends_with("linux-gnu") {
+                continue;
+            }
+            let archive = Path::new(&assets).join(&bundle.archive);
+            let root =
+                automatic::acquire(&lock, target, cache.path(), Some(&archive), true).unwrap();
+            assert_eq!(
+                root,
+                automatic::acquire(&lock, target, cache.path(), None, true).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "downloads the published Linux CPU SDK from an empty cache"]
+fn published_linux_cpu_sdk_downloads_and_reuses_offline_cache() {
+    let lock = automatic::cpu_runtime_lock().unwrap();
+    let target = "x86_64-unknown-linux-gnu";
+    let cache = tempfile::tempdir().unwrap();
+    let root = automatic::acquire(&lock, target, cache.path(), None, false).unwrap();
+    assert_eq!(
+        root,
+        automatic::acquire(&lock, target, cache.path(), None, true).unwrap()
+    );
+}
+
+#[test]
 fn cpu_variants_select_before_download_and_keep_native_options_strict() {
     let legacy = automatic::runtime_lock().unwrap();
     let cpu = automatic::cpu_runtime_lock().unwrap();

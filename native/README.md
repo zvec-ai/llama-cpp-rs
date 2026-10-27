@@ -12,7 +12,8 @@ No crates.io packages are published.
 Baseline: `zvec-ai/zvec-grep`, branch `codex/cuda-static-linking`, commit
 `cc8fa72938db42b648687fccd99b088e94520186`.
 Native source: llama.cpp `5f55650a78f92aff4d48d671423e888fac0469ff`.
-The embedded runtime locks pin the published and verified
+The embedded runtime locks select Linux SDKs from
+`zvec-0.1.154-glibc-2.31-r1`. macOS and Windows retain their verified
 `zvec-0.1.154-r1` and `zvec-0.1.154-cpu-r2` SDKs.
 Branch `prebuilt/0.1.154-cpu-r2` isolates Windows ARM64 CPU support from the
 CUDA r2 upgrade: the default runtime lock and CUDA architecture configuration
@@ -33,7 +34,8 @@ changes can reuse the pinned native SDK.
 
 The CPU-only matrix includes Linux x64, Windows x64 and Windows ARM64 (eight
 SDK configurations total). The embedded `build_support/cpu-runtime-lock.json`
-pins all three targets from `zvec-0.1.154-cpu-r2`. Windows ARM64 selects its
+pins Linux x64 from `zvec-0.1.154-glibc-2.31-r1` and both Windows targets from
+`zvec-0.1.154-cpu-r2`. Windows ARM64 selects its
 own static CPU SDK in both `auto` and `prebuilt`; enabling CUDA or overriding
 the source compiler does not silently select a CPU or x64 archive. Existing
 archives and CUDA loading/fallback logic are unchanged. Exact features and native
@@ -73,9 +75,19 @@ predates CUDA 13 support. CUDA SDKs use Clang 16 for the newer CPU dispatch
 instructions, retaining Ubuntu 20.04's libstdc++ and glibc. The workflow's
 `linux_only` input validates the Linux targets and skips publication.
 
-These gates apply to newly built artifacts. The embedded runtime locks still
-refer to the previously published Ubuntu 24.04 SDKs until verified replacements
-are published under new immutable release names and their digests are updated.
+The Linux SDKs were built at `f72a0f29a49e9888d45ab95171fd77338f1bfd99` and
+verified in [CPU run 40442188943](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/40442188943)
+and [ARM64/CUDA run 40442194019](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/40442194019).
+All tested ELF requirements are at most `GLIBC_2.30`; the supported baseline
+remains glibc 2.31. Both CUDA plugins also passed real T4 GPU offload tests.
+
+The new release promotes those exact CI archives without repackaging. Archive
+names and manifest release labels retain their original ABI-family identifiers;
+each Linux lock entry overrides the download `release` and records the native
+`source_commit`, archive digest, manifest digest and native configuration.
+Targets without an override use the lock's top-level release. Cache identity is
+still the archive SHA-256. The Release includes both consumer locks, checksums,
+CI evidence and `provenance.json` so the original build can be traced.
 
 CUDA 13.1.1 primary build architectures, unchanged from the pinned r1 SDK:
 `75-real;80-real;86-real;89-real;90-real;90-virtual`.
@@ -213,8 +225,10 @@ existing delay-load setup). This step does not change zg's loader or packaging.
 
 ## Build and release
 
-`native-release.yml` runs only via `workflow_dispatch`; select `prebuilt/0.1.154-cpu-r2`
-when publishing. Ordinary pushes do not rebuild or republish native SDKs.
+`native-release.yml` runs only via `workflow_dispatch`. Its full-matrix release
+job is restricted to `prebuilt/0.1.154`; this branch's glibc 2.31 release promotes
+the previously verified Linux-only artifacts. Ordinary pushes do not rebuild or
+republish native SDKs.
 Its default variant retains the original five-platform and CUDA gates. Select
 `variant=cpu` to build the three CPU-only SDKs on ordinary hosted runners,
 without CUDA toolchain setup or GPU jobs, reusing the same packaging, external

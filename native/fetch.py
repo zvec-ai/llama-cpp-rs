@@ -5,6 +5,7 @@ The caller must pin the archive digest in source control; do not discover it
 from an unpinned remote checksums file during builds.
 """
 import argparse
+import json
 from pathlib import Path, PurePosixPath
 import os
 import re
@@ -13,7 +14,7 @@ import subprocess
 import tarfile
 import tempfile
 
-from runtime import RELEASE, TARGETS, digest, verify
+from runtime import ROOT, TARGETS, digest, verify
 
 
 def extract(archive, destination):
@@ -56,8 +57,11 @@ def main():
     if output.exists():
         parser.error("--output must not already exist (no implicit cache replacement)")
     output.parent.mkdir(parents=True, exist_ok=True)
-    name = f"llama-cpp-runtime-{RELEASE}-{args.target}.tar.gz"
-    url = f"https://github.com/zvec-ai/llama-cpp-rs/releases/download/{RELEASE}/{name}"
+    lock = json.loads((ROOT / "llama-cpp-sys-2/build_support/runtime-lock.json").read_text())
+    entry = lock["targets"][args.target]
+    name = entry["archive"]
+    release = entry.get("release", lock["release"])
+    url = f"https://github.com/zvec-ai/llama-cpp-rs/releases/download/{release}/{name}"
     with tempfile.TemporaryDirectory(prefix=".llama-runtime-", dir=output.parent) as temporary:
         temporary = Path(temporary)
         archive = temporary / name

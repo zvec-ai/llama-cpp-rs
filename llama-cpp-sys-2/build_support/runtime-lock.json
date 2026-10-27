@@ -327,9 +327,11 @@
       }
     },
     "aarch64-unknown-linux-gnu": {
+      "release": "zvec-0.1.154-glibc-2.31-r1",
+      "source_commit": "f72a0f29a49e9888d45ab95171fd77338f1bfd99",
       "archive": "llama-cpp-runtime-zvec-0.1.154-r1-aarch64-unknown-linux-gnu.tar.gz",
-      "sha256": "e0c5c7c542c06f8fd8221bfa3d6068f390f2831f70abf04cda4c4a45a817281d",
-      "manifest_sha256": "13ed575533f15c133a59109df0e41177ffeb02c9bdde262dc86581fae6e7e970",
+      "sha256": "31896d280f3c13b02e8a4a497a80cf35fd44b23f0e96e7bc2c46a2a3a013fb4c",
+      "manifest_sha256": "32d626157bcb41278f5a284788e8039365bf7f33b497cbebb03175a118fc226a",
       "features": [
         "common"
       ],
@@ -487,9 +489,11 @@
       }
     },
     "x86_64-unknown-linux-gnu": {
+      "release": "zvec-0.1.154-glibc-2.31-r1",
+      "source_commit": "f72a0f29a49e9888d45ab95171fd77338f1bfd99",
       "archive": "llama-cpp-runtime-zvec-0.1.154-r1-x86_64-unknown-linux-gnu.tar.gz",
-      "sha256": "f695815a87cf09ca64eb025f7e7f2f27452a86ede41702724ee895c9c2317b09",
-      "manifest_sha256": "db81687fc94f7895d75aa3e1e840cf545324efcc22ccbd1653b84f126dc155bc",
+      "sha256": "3dd802e701ef46f6ff2ae6b0466bd81e40ba0421315eac77d5737c5d3d2db59d",
+      "manifest_sha256": "7e8dee816a1ea40d6a335d9a9cba2ba3a4a5d48594ff6d4ad3249105067ff6d1",
       "features": [
         "common",
         "cuda",
@@ -500,7 +504,7 @@
         "BUILD_SHARED_LIBS": "ON",
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CUDA_ARCHITECTURES": "75-real;80-real;86-real;89-real;90-real;90-virtual",
-        "CMAKE_CXX_FLAGS": " -ffunction-sections -fdata-sections -fPIC -m64 -w",
+        "CMAKE_CXX_FLAGS": " -ffunction-sections -fdata-sections -fPIC -m64 --target=x86_64-unknown-linux-gnu -w",
         "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
         "GGML_ACCELERATE": "ON",
         "GGML_ALL_WARNINGS_3RD_PARTY": "OFF",
