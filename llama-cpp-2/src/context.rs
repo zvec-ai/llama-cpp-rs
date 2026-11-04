@@ -89,6 +89,24 @@ impl<'model> LlamaContext<'model> {
         unsafe { llama_cpp_sys_2::llama_n_ctx(self.context.as_ptr()) }
     }
 
+    /// Sets the CPU thread budgets without recreating the context.
+    ///
+    /// `n_threads` applies to single-token decoding; `n_threads_batch` applies to
+    /// prompt and batch processing. These values do not control GPU threads or
+    /// batch sizes. They have the same semantics as the corresponding context
+    /// parameters.
+    ///
+    /// Waits for any queued native computation to finish before updating the
+    /// budgets. The context's model, memory and outputs are retained.
+    pub fn set_n_threads(&mut self, n_threads: i32, n_threads_batch: i32) {
+        // SAFETY: the context is live and exclusively borrowed. Synchronizing
+        // completes any asynchronous work before its thread budgets change.
+        unsafe {
+            llama_cpp_sys_2::llama_synchronize(self.context.as_ptr());
+            llama_cpp_sys_2::llama_set_n_threads(self.context.as_ptr(), n_threads, n_threads_batch);
+        }
+    }
+
     /// Decodes the batch.
     ///
     /// # Errors
