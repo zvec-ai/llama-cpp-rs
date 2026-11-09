@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Audit native dependencies and the Ubuntu 20.04 ABI ceiling."""
+"""Audit native dependencies and the glibc 2.28 / AlmaLinux 8 ABI ceiling."""
 import argparse
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
-from runtime import verify
+from runtime import LINUX_ABI, verify
 
-LINUX_LIMITS = {"GLIBC": "2.31", "GLIBCXX": "3.4.28"}
+LINUX_LIMITS = LINUX_ABI
 
 
 def required_versions(text):
@@ -19,7 +19,9 @@ def required_versions(text):
         if re.match(r"^Version .* section ", line):
             in_needs = line.startswith("Version needs section ")
         if in_needs:
-            requirements.update(re.findall(r"\bName: ((?:GLIBC|GLIBCXX)_[\w.]+)", line))
+            requirement = re.search(r"\bName: ((?:GLIBC|GLIBCXX|CXXABI)_\S+)\s+Flags: (.*?)\s+Version:", line)
+            if requirement and "WEAK" not in requirement[2].upper().split():
+                requirements.add(requirement[1])
     return sorted(requirements)
 
 
@@ -29,7 +31,7 @@ def check_versions(requirements, label):
         limit = LINUX_LIMITS[family]
         if (not re.fullmatch(r"\d+(?:\.\d+)+", version)
                 or tuple(map(int, version.split("."))) > tuple(map(int, limit.split(".")))):
-            raise RuntimeError(f"Ubuntu 20.04 ABI exceeded: {label} needs {name}; maximum {family}_{limit}")
+            raise RuntimeError(f"Linux glibc 2.28 ABI exceeded: {label} needs {name}; maximum {family}_{limit}")
 
 
 def readelf(path, option):

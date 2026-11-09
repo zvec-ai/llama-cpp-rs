@@ -14,6 +14,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = "zvec-0.1.154-r1"
 CPU_RELEASE = "zvec-0.1.154-cpu-r2"
+LINUX_ABI = {"GLIBC": "2.28", "GLIBCXX": "3.4.25", "CXXABI": "1.3.11"}
 SOURCE_LOCK = json.loads((ROOT / "llama-cpp-sys-2/build_support/source-lock.json").read_text(encoding="utf-8"))
 REVISION = SOURCE_LOCK["revision"]
 ARCH13 = "75-real;80-real;86-real;89-real;90-real;90-virtual"
@@ -90,13 +91,17 @@ def cache_entries(path):
     return result
 
 
-def audit_cache(cache, target, fallback=False, variant="default"):
+def audit_cache(cache, target, fallback=False, variant="default", glibc228=False):
     cuda = "cuda" in sdk_features(target, variant)
     expected = {"CMAKE_BUILD_TYPE": "Release", "GGML_NATIVE": "OFF", "GGML_OPENMP": "OFF",
                 "LLAMA_BUILD_TESTS": "OFF", "LLAMA_BUILD_EXAMPLES": "OFF", "LLAMA_BUILD_TOOLS": "OFF",
                 "LLAMA_BUILD_APP": "OFF", "LLAMA_BUILD_SERVER": "OFF", "LLAMA_CURL": "OFF",
                 "LLAMA_BUILD_COMMON": "OFF" if fallback else "ON",
                 "BUILD_SHARED_LIBS": "ON" if cuda else "OFF"}
+    if glibc228:
+        if "linux" not in target:
+            raise RuntimeError("The glibc 2.28 build profile only applies to Linux")
+        expected["LLAMA_SUBPROCESS"] = "OFF"
     if cuda:
         expected.update(GGML_BACKEND_DL="ON", GGML_CUDA="ON", GGML_CUDA_NCCL="OFF",
                         CMAKE_CUDA_ARCHITECTURES=ARCH12 if fallback else ARCH13)
@@ -188,6 +193,10 @@ def primary(target, output, target_dir, variant="default"):
     # The two Linux containers share /work/target, not /root/.cargo.
     env.setdefault("LLAMA_CPP_SOURCE_CACHE", str(ROOT / "target/native-source"))
     env.pop("LLAMA_CPP_RUNTIME_DIR", None)
+    if "linux" in target:
+        # Passed through the existing CMAKE_* interface, without changing the
+        # crate's generic source builds or the locked native source tree.
+        env["CMAKE_PROJECT_TOP_LEVEL_INCLUDES"] = str(ROOT / "native/linux-glibc228.cmake")
     if "cuda" in features:
         nvcc = subprocess.check_output(["nvcc", "--version"], text=True)
         if "release 13.1," not in nvcc:
@@ -202,7 +211,8 @@ def primary(target, output, target_dir, variant="default"):
     out, _ = cargo_build(target, target_dir, env, features=features)
     source_root = source_from_build(out)
     write_json(target_dir / "source-root.json", {"revision": REVISION, "path": str(source_root)})
-    cache = audit_cache(cache_entries(out / "build/CMakeCache.txt"), target, variant=variant)
+    cache = audit_cache(cache_entries(out / "build/CMakeCache.txt"), target, variant=variant,
+                        glibc228="linux" in target)
     # Cargo reports exactly this build's OUT_DIR. Never select by newest glob.
     libraries = []
     for line in (out.parent / "output").read_text(encoding="utf-8").splitlines():
@@ -235,6 +245,8 @@ def primary(target, output, target_dir, variant="default"):
                 "baseline": {"repository": "zvec-ai/zvec-grep", "commit": "cc8fa72938db42b648687fccd99b088e94520186"},
                 "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip()}
+    if "linux" in target:
+        manifest["linux_abi"] = LINUX_ABI
     write_json(output / "manifest.json", manifest)
     seal(output)
 
@@ -262,6 +274,8 @@ def fallback(output, target_dir, cuda_root):
                "-DLLAMA_BUILD_TOOLS=OFF", "-DLLAMA_BUILD_COMMON=OFF", "-DLLAMA_BUILD_APP=OFF",
                "-DLLAMA_BUILD_SERVER=OFF", "-DLLAMA_CURL=OFF", f"-DCMAKE_CUDA_COMPILER={nvcc}",
                f"-DCUDAToolkit_ROOT={cuda_root}", f"-DCMAKE_CUDA_ARCHITECTURES={ARCH12}"]
+    if "linux" in target:
+        command += ["-DLLAMA_SUBPROCESS=OFF"]
     if os.name == "nt":
         command += ["-DCMAKE_C_COMPILER=cl", "-DCMAKE_CXX_COMPILER=cl", "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"]
     source_env = os.environ.copy()
@@ -277,7 +291,8 @@ def fallback(output, target_dir, cuda_root):
     copy_file(paths[0], destination)
     if os.name != "nt":
         run(["patchelf", "--set-rpath", "$ORIGIN/..", destination])
-    manifest["fallback_cmake"] = audit_cache(cache_entries(build / "CMakeCache.txt"), target, fallback=True)
+    manifest["fallback_cmake"] = audit_cache(cache_entries(build / "CMakeCache.txt"), target,
+                                            fallback=True, glibc228="linux_abi" in manifest)
     write_json(output / "manifest.json", manifest)
     seal(output)
 
@@ -321,6 +336,13 @@ def verify(output):
             raise RuntimeError("Missing CPU backend variants")
         if any(re.search(r"(?:cublas|cudart|nvcuda|libcuda\.)", name) for name in manifest["files"]):
             raise RuntimeError("NVIDIA runtime libraries must not be redistributed")
+    if "linux_abi" in manifest:
+        if manifest["linux_abi"] != LINUX_ABI or "linux" not in manifest["target"]:
+            raise RuntimeError("Unknown Linux SDK ABI profile")
+        variant = "cpu" if manifest["release"] == CPU_RELEASE else "default"
+        audit_cache(manifest["primary_cmake"], manifest["target"], variant=variant, glibc228=True)
+        if "cuda" in manifest["features"]:
+            audit_cache(manifest["fallback_cmake"], manifest["target"], fallback=True, glibc228=True)
     return manifest
 
 

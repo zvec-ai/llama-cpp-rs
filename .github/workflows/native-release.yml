@@ -27,6 +27,8 @@ concurrency:
 jobs:
   build:
     if: github.repository == 'zvec-ai/llama-cpp-rs'
+    env:
+      DOCKER_BUILDKIT: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -118,33 +120,40 @@ jobs:
           path: |
             ~/.cargo/registry/
             target/native-build/
-          key: ${{ inputs.variant == 'cpu' && 'native-cpu-v2' || 'native-v2' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'native/Dockerfile', 'native/build-requirements.txt') }}-${{ github.sha }}
-          restore-keys: ${{ inputs.variant == 'cpu' && 'native-cpu-v2' || 'native-v2' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'native/Dockerfile', 'native/build-requirements.txt') }}-
+          key: ${{ inputs.variant == 'cpu' && 'native-cpu-v3' || 'native-v3' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'native/Dockerfile', 'native/build-requirements.txt', 'native/*.cmake', 'native/*.sh') }}-${{ github.sha }}
+          restore-keys: ${{ inputs.variant == 'cpu' && 'native-cpu-v3' || 'native-v3' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'native/Dockerfile', 'native/build-requirements.txt', 'native/*.cmake', 'native/*.sh') }}-
       - name: Test packaging contract
         run: python -m unittest discover -s native -p 'test_*.py' -v
       - name: Build primary through the upstream Cargo build script
         if: runner.os != 'Linux'
         run: python native/runtime.py primary --target ${{ matrix.target }} --variant ${{ inputs.variant }}
-      - name: Build Linux SDK and consumer images on Ubuntu 20.04
+      - name: Build Linux SDK and consumer images on glibc 2.28
         if: runner.os == 'Linux'
         env:
           BUILDER: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu' && 'cuda13' || 'cpu' }}
         run: |
           docker build --target cpu -f native/Dockerfile -t llama-native-cpu .
           docker build --target "$BUILDER" -f native/Dockerfile -t llama-native-primary .
+          docker build --target runtime-cpu -f native/Dockerfile -t llama-native-runtime-cpu .
           docker run --rm -v "$GITHUB_WORKSPACE:/work" \
             llama-native-cpu python3 -m unittest discover -s native -p 'test_*.py' -v
-      - name: Build Linux primary against glibc 2.31
+      - name: Build Linux primary against glibc 2.28
         if: runner.os == 'Linux'
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CARGO_BUILD_JOBS -e CMAKE_BUILD_PARALLEL_LEVEL \
-            llama-native-primary python3 native/runtime.py primary --target ${{ matrix.target }} --variant ${{ inputs.variant }}
+            llama-native-primary bash -euc '
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
+              python3 native/runtime.py primary --target "$1" --variant "$2"
+            ' bash '${{ matrix.target }}' '${{ inputs.variant }}'
       - name: Build Linux CUDA 12.4 fallback only
         if: matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu'
         run: |
           docker build --target cuda12 -f native/Dockerfile -t llama-native-cuda12 .
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CMAKE_BUILD_PARALLEL_LEVEL \
-            llama-native-cuda12 python3 native/runtime.py fallback
+            llama-native-cuda12 bash -euc '
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
+              python3 native/runtime.py fallback
+            '
       - name: Restore output ownership
         if: always() && runner.os == 'Linux'
         run: sudo chown -R "$(id -u):$(id -g)" target
@@ -178,11 +187,14 @@ jobs:
       - name: Rebuild a Rust consumer without bindgen or native compilation
         if: runner.os != 'Linux'
         run: python native/runtime.py external --bundle target/relocated/bundle --target-dir target/external-consumer
-      - name: Rebuild the Linux consumer on Ubuntu 20.04 without a CUDA toolkit
+      - name: Rebuild the Linux consumer on glibc 2.28 without a CUDA toolkit
         if: runner.os == 'Linux'
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CARGO_BUILD_JOBS \
-            llama-native-cpu python3 native/runtime.py external --bundle target/relocated/bundle --target-dir target/external-consumer
+            llama-native-cpu bash -euc '
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
+              python3 native/runtime.py external --bundle target/relocated/bundle --target-dir target/external-consumer
+            '
           sudo chown -R "$(id -u):$(id -g)" target
       - uses: actions/cache@v5
         with:
@@ -191,22 +203,21 @@ jobs:
       - name: Real CPU embedding from the relocated SDK
         if: runner.os != 'Linux'
         run: python native/e2e.py --bundle target/relocated/bundle --mode cpu
-      - name: Real Linux CPU inference on clean Ubuntu 20.04
+      - name: Real Linux CPU inference on clean glibc 2.28
         if: runner.os == 'Linux'
         env:
           CUDA_SDK: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && inputs.variant != 'cpu' && '1' || '0' }}
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CUDA_SDK \
-            ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214 bash -euc '
-            apt-get update -qq && apt-get install -y --no-install-recommends python3 curl ca-certificates libstdc++6 >/dev/null
-            test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.31"
+            llama-native-runtime-cpu bash -euc '
+            test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
             if [ "$CUDA_SDK" = 1 ]; then
               ldd /work/target/relocated/bundle/lib/libggml-cuda.so | grep -Eq "lib(cuda|cudart|cublas).*not found"
             fi
             cd /work && python3 native/e2e.py --bundle target/relocated/bundle --mode cpu --logs target/evidence/no-cuda
           '
           sudo chown -R "$(id -u):$(id -g)" target
-      - name: Audit dynamic dependencies and Linux glibc 2.31 ceiling
+      - name: Audit dynamic dependencies and Linux glibc 2.28 ceiling
         run: python native/audit.py --bundle target/relocated/bundle --logs target/evidence
       - uses: actions/upload-artifact@v7
         with:
@@ -231,6 +242,8 @@ jobs:
   cuda-linux:
     needs: build
     if: inputs.variant != 'cpu'
+    env:
+      DOCKER_BUILDKIT: '1'
     runs-on:
       group: gpu-runners
       labels: gpu-linux-t4
@@ -257,14 +270,12 @@ jobs:
         with:
           path: target/models/
           key: native-embeddinggemma-q8-b5ce9d77
-      - name: Real CUDA 12 fallback and CUDA 13 primary offload
+      - name: Real CUDA 12 fallback and CUDA 13 primary offload on glibc 2.28
         run: |
-          for pair in \
-            'cuda12 nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04@sha256:ac55d124da4882b497f732d8dfd9a702d5447a5f29d08d56da6f64f0a1eb34bc' \
-            'cuda13 nvidia/cuda:13.1.1-runtime-ubuntu24.04@sha256:12e26235ebe186000d71f8e457a9ad2aed6c0cb743a7935f0443bacef206aa34'; do
-            read -r mode image <<< "$pair"
-            docker run --rm --gpus all -v "$GITHUB_WORKSPACE:/work" "$image" bash -euc '
-              apt-get update -qq && apt-get install -y --no-install-recommends python3 curl ca-certificates >/dev/null
+          for mode in cuda12 cuda13; do
+            docker build --target "runtime-$mode" -f native/Dockerfile -t "llama-native-runtime-$mode" .
+            docker run --rm --gpus all -v "$GITHUB_WORKSPACE:/work" "llama-native-runtime-$mode" bash -euc '
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
               cd /work && python3 native/e2e.py --bundle target/relocated/bundle --mode "$1" --logs "target/gpu-evidence/$1"
             ' bash "$mode"
           done

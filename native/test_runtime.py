@@ -47,6 +47,9 @@ class ContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "stop before compilation"):
                     primary(target, Path(temp) / "bundle", Path(temp) / "build", "cpu")
                 self.assertEqual(build.call_args.kwargs["features"], ["common"])
+                if "linux" in target:
+                    self.assertEqual(build.call_args.args[2]["CMAKE_PROJECT_TOP_LEVEL_INCLUDES"],
+                                     str(ROOT / "native/linux-glibc228.cmake"))
                 if target == "aarch64-pc-windows-msvc":
                     env = build.call_args.args[2]
                     self.assertEqual(env["CC"], "clang-cl")
@@ -155,6 +158,27 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(lock["release"], RELEASE)
         for target in ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"):
             self.assertEqual(lock["targets"][target]["cmake"]["CMAKE_CUDA_ARCHITECTURES"], ARCH13)
+
+    def test_linux_profile_keeps_backends_and_common_without_subprocess(self):
+        lock = json.loads((ROOT / "llama-cpp-sys-2/build_support/runtime-lock.json").read_text())
+        cpu_lock = json.loads((ROOT / "llama-cpp-sys-2/build_support/cpu-runtime-lock.json").read_text())
+        for target, variant, entry in [
+            ("x86_64-unknown-linux-gnu", "default", lock["targets"]["x86_64-unknown-linux-gnu"]),
+            ("aarch64-unknown-linux-gnu", "default", lock["targets"]["aarch64-unknown-linux-gnu"]),
+            ("x86_64-unknown-linux-gnu", "cpu", cpu_lock["targets"]["x86_64-unknown-linux-gnu"]),
+        ]:
+            with self.subTest(target=target, variant=variant):
+                # Existing published SDKs remain inspectable. New Linux builds
+                # must explicitly remove the optional subprocess dependency.
+                cache = dict(entry["cmake"])
+                audit_cache(cache, target, variant=variant)
+                cache["LLAMA_SUBPROCESS"] = "ON"
+                with self.assertRaisesRegex(RuntimeError, "LLAMA_SUBPROCESS"):
+                    audit_cache(cache, target, variant=variant, glibc228=True)
+                cache["LLAMA_SUBPROCESS"] = "OFF"
+                audited = audit_cache(cache, target, variant=variant, glibc228=True)
+                self.assertEqual(audited["LLAMA_BUILD_COMMON"], "ON")
+                self.assertEqual(audited["GGML_CUDA"], entry["cmake"]["GGML_CUDA"])
 
     def test_clang_cl_requires_cpp_exceptions_without_changing_other_compilers(self):
         lock = json.loads((ROOT / "llama-cpp-sys-2/build_support/cpu-runtime-lock.json").read_text())

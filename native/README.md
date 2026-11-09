@@ -1,7 +1,8 @@
 # Versioned native runtime SDK
 
-This is a minimal fork of upstream tag `0.1.154`. `llama-cpp-2`'s safe API and
-the native source-build flags are unchanged. `llama-cpp-sys-2/build.rs` gains
+This is a minimal fork of upstream tag `0.1.154`. `llama-cpp-2`'s safe API is
+unchanged. Linux maintainer SDK builds disable the optional subprocess feature
+as described below. `llama-cpp-sys-2/build.rs` gains
 automatic prebuilt SDK selection and an explicit offline external mode.
 Git consumers do not fetch a llama.cpp submodule. Only a selected source build
 resolves native source, pinned separately in `build_support/source-lock.json`.
@@ -15,6 +16,13 @@ Native source: llama.cpp `5f55650a78f92aff4d48d671423e888fac0469ff`.
 The embedded runtime locks select Linux SDKs from
 `zvec-0.1.154-glibc-2.31-r1`. macOS and Windows retain their verified
 `zvec-0.1.154-r1` and `zvec-0.1.154-cpu-r2` SDKs.
+Branch `prebuilt/0.1.154-cpu-r2-glibc-2.28` is based on
+`prebuilt/0.1.154-cpu-r2-glibc-2.31` at `b55399a` and changes the Linux build
+and acceptance recipe to glibc 2.28. It
+does not publish a new SDK or change those consumer locks. A successful build
+and the corresponding recorded checksums are required before a new immutable
+release can be selected by consumers; the recipe alone is not a compatibility
+claim for the currently published archives.
 Branch `prebuilt/0.1.154-cpu-r2` isolates Windows ARM64 CPU support from the
 CUDA r2 upgrade: the default runtime lock and CUDA architecture configuration
 remain identical to `0e2d4b5`, while the CPU lock adds the verified ARM64 SDK.
@@ -52,36 +60,64 @@ default features even when its own defaults are disabled, exactly as in zg.
 Apple backend defaults, including embedded Metal shaders and Accelerate, are
 left to the pinned upstream build. Intel macOS sets deployment target 14.0,
 matching zg. OpenMP is disabled. Release native builds are used for both debug
-and release Rust consumers. Linux GNU release builds and their separately linked
-test consumers use the pinned Ubuntu 20.04 image (glibc 2.31), on both x64 and
-ARM64. The host Actions runner does not supply the compiler or sysroot. MSVC uses
-the dynamic CRT.
+and release Rust consumers. The new Linux GNU build recipe compiles SDKs and
+their separately linked test consumers against pinned manylinux 2.28 images,
+on both x64 and ARM64. ARM64 uses its native `ubuntu-24.04-arm` Actions runner;
+the container supplies the compiler and sysroot. MSVC uses the dynamic CRT.
 
 The Linux acceptance gate inspects version requirements of every shared library
 (including both CUDA plugins) and the external-mode consumer. It rejects imports
-newer than `GLIBC_2.31` or `GLIBCXX_3.4.28`, and retains `linux-abi.json` plus
-`native-imports.txt` as evidence. The linked consumer also covers static CPU SDKs.
-Real CPU embedding runs in a clean Ubuntu 20.04 container with its own system
-libraries and no CUDA toolkit or NVIDIA libraries. CUDA offload remains covered
-by the existing GPU-runner tests; host NVIDIA driver/runtime requirements are
+newer than `GLIBC_2.28`, `GLIBCXX_3.4.25` or `CXXABI_1.3.11`, and retains
+`linux-abi.json` plus `native-imports.txt` as evidence. The linked consumer also
+covers static CPU SDKs, whose final symbol versions are established at link
+time. Real CPU embedding runs in a clean AlmaLinux 8 runtime container with its
+own system libraries and no CUDA toolkit or NVIDIA libraries. Both CUDA modes
+run in glibc 2.28 runtime containers on the GPU runner. Each Linux execution
+checks `getconf GNU_LIBC_VERSION`; a successful test on a newer host libc does
+not satisfy this acceptance gate. Host NVIDIA driver requirements remain
 separate from the SDK's glibc ceiling.
 
-`native/Dockerfile` has `cpu`, `cuda13` and `cuda12` targets. All compile against
-Ubuntu 20.04 headers and libraries. CUDA 13 has no official Ubuntu 20.04 image,
-so only its toolkit is copied from the pinned Rocky Linux 8 image; that image's
-system libraries are never copied. CUDA 12 uses the pinned Ubuntu 20.04 toolkit.
-CMake is installed from hash-pinned wheels because Ubuntu 20.04's CMake 3.16
-predates CUDA 13 support. CUDA SDKs use Clang 16 for the newer CPU dispatch
-instructions, retaining Ubuntu 20.04's libstdc++ and glibc. The workflow's
-`linux_only` input validates the Linux targets and skips publication.
+`native/Dockerfile` has `cpu`, `cuda13` and `cuda12` build targets. They share
+the glibc 2.28 build environment. Only CUDA toolkits are copied from the pinned
+NVIDIA images; their system libraries and sysroots are not copied. The
+`runtime-cpu`, `runtime-cuda12` and `runtime-cuda13` targets provide separate
+glibc 2.28 acceptance environments. GPU runtime targets add the corresponding
+CUDA runtime/cuBLAS libraries, without a compiler or a second libc. CUDA
+architecture coverage and the single-core/fallback layout remain unchanged.
 
-The Linux SDKs were built at `f72a0f29a49e9888d45ab95171fd77338f1bfd99` and
+The Linux SDK recipe sets `LLAMA_SUBPROCESS=OFF` while retaining `common`.
+The pinned upstream subprocess helper calls
+`posix_spawn_file_actions_addchdir_np`, an interface unavailable on glibc 2.28.
+These new Linux SDKs therefore do not provide the optional `common_subprocess`
+helper. In upstream applications this switch also disables the multi-model
+server router, launching external MCP servers through stdio, and all nonempty
+built-in server tool lists through their shared subprocess gate, not only shell
+tools. MTMD video import through external `ffmpeg`/`ffprobe` is automatically
+disabled as well. This concerns launching an external MCP process, not zg's
+own MCP server.
+
+The current SDK does not build upstream servers, tools, apps or examples and
+does not enable the `mtmd` feature. Its CPU/CUDA inference, embedding, reranking,
+tokenizer, sampling and grammar functionality remain enabled. This is a native
+configuration change and must be recorded in the new manifest and consumer
+locks. Existing macOS/Windows SDK configurations and ordinary source-build
+defaults are unaffected.
+
+Use `linux_only=true, variant=default` to validate Linux ARM64 CPU and x64 CUDA
+SDKs, and `linux_only=true, variant=cpu` for the separate Linux x64 static CPU
+SDK. Both runs skip publication. Their new build, ABI and inference evidence
+must pass before claiming that the new SDKs support glibc 2.28. The following
+published evidence describes the earlier 2.31 SDKs only.
+
+### Previously published glibc 2.31 SDKs
+
+The existing Linux SDKs were built at `f72a0f29a49e9888d45ab95171fd77338f1bfd99` and
 verified in [CPU run 40442188943](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/40442188943)
 and [ARM64/CUDA run 40442194019](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/40442194019).
 All tested ELF requirements are at most `GLIBC_2.30`; the supported baseline
 remains glibc 2.31. Both CUDA plugins also passed real T4 GPU offload tests.
 
-The new release promotes those exact CI archives without repackaging. Archive
+That release promoted those exact CI archives without repackaging. Archive
 names and manifest release labels retain their original ABI-family identifiers;
 each Linux lock entry overrides the download `release` and records the native
 `source_commit`, archive digest, manifest digest and native configuration.
@@ -226,9 +262,11 @@ existing delay-load setup). This step does not change zg's loader or packaging.
 ## Build and release
 
 `native-release.yml` runs only via `workflow_dispatch`. Its full-matrix release
-job is restricted to `prebuilt/0.1.154`; this branch's glibc 2.31 release promotes
-the previously verified Linux-only artifacts. Ordinary pushes do not rebuild or
-republish native SDKs.
+job remains restricted to `prebuilt/0.1.154`. This build-only branch does not
+satisfy that publication gate, and `linux_only=true` always skips publication.
+Ordinary pushes do not rebuild or republish native SDKs. The embedded locks
+continue to select the previously published archives until a separately
+reviewed promotion records a new release name and real candidate hashes.
 Its default variant retains the original five-platform and CUDA gates. Select
 `variant=cpu` to build the three CPU-only SDKs on ordinary hosted runners,
 without CUDA toolchain setup or GPU jobs, reusing the same packaging, external
@@ -255,8 +293,10 @@ at another path and used to compile the probe in external mode with intentionall
 invalid libclang/C++/CUDA tool paths. Rust contract tests cover rejection cases.
 
 Every platform runs a real checksum-pinned EmbeddingGemma 300M Q8 embedding and
-checks dimension/finiteness. Linux also runs without NVIDIA libraries installed.
-GPU tests exercise CUDA 12-only and CUDA 13 environments, assert actual layer
+checks dimension/finiteness. Linux also runs without NVIDIA libraries installed
+in the clean glibc 2.28 runtime image. Linux GPU tests exercise CUDA 12-only and
+CUDA 13 environments on the same glibc baseline; Windows retains its existing
+GPU runtime setup. The tests assert actual layer
 offload and the loaded plugin path, and compare CPU/GPU embeddings (cosine
 similarity >= 0.999). Native dependency audits and inference logs are retained
 as Actions artifacts. A published pre-release means all gates passed; it does
