@@ -14,15 +14,12 @@ Baseline: `zvec-ai/zvec-grep`, branch `codex/cuda-static-linking`, commit
 `cc8fa72938db42b648687fccd99b088e94520186`.
 Native source: llama.cpp `5f55650a78f92aff4d48d671423e888fac0469ff`.
 The embedded runtime locks select Linux SDKs from
-`zvec-0.1.154-glibc-2.31-r1`. macOS and Windows retain their verified
+`zvec-0.1.154-glibc-2.28-r1`. macOS and Windows retain their verified
 `zvec-0.1.154-r1` and `zvec-0.1.154-cpu-r2` SDKs.
 Branch `prebuilt/0.1.154-cpu-r2-glibc-2.28` is based on
-`prebuilt/0.1.154-cpu-r2-glibc-2.31` at `b55399a` and changes the Linux build
-and acceptance recipe to glibc 2.28. It
-does not publish a new SDK or change those consumer locks. A successful build
-and the corresponding recorded checksums are required before a new immutable
-release can be selected by consumers; the recipe alone is not a compatibility
-claim for the currently published archives.
+`prebuilt/0.1.154-cpu-r2-glibc-2.31` at `b55399a`. It builds and tests Linux
+SDKs on glibc 2.28 and pins the verified archives described below. The Linux
+manifests and consumer locks record `LLAMA_SUBPROCESS=OFF`.
 Branch `prebuilt/0.1.154-cpu-r2` isolates Windows ARM64 CPU support from the
 CUDA r2 upgrade: the default runtime lock and CUDA architecture configuration
 remain identical to `0e2d4b5`, while the CPU lock adds the verified ARM64 SDK.
@@ -42,15 +39,17 @@ changes can reuse the pinned native SDK.
 
 The CPU-only matrix includes Linux x64, Windows x64 and Windows ARM64 (eight
 SDK configurations total). The embedded `build_support/cpu-runtime-lock.json`
-pins Linux x64 from `zvec-0.1.154-glibc-2.31-r1` and both Windows targets from
+pins Linux x64 from `zvec-0.1.154-glibc-2.28-r1` and both Windows targets from
 `zvec-0.1.154-cpu-r2`. Windows ARM64 selects its
 own static CPU SDK in both `auto` and `prebuilt`; enabling CUDA or overriding
 the source compiler does not silently select a CPU or x64 archive. Existing
 archives and CUDA loading/fallback logic are unchanged. Exact features and native
 options select the archive before any download, using the existing verified cache.
-The CPU lock pins the published Linux/Windows archives after real builds,
-external-consumer linkage and CPU inference passed in
+The original CPU release passed real builds, external-consumer linkage and
+CPU inference in
 [run 39929930003](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/39929930003).
+The replacement Linux SDK's validation is recorded below; Windows retains
+those original verified archives.
 Matching `{common}` builds on these three targets use only the CPU archive in `auto` and `prebuilt`;
 they never download a CUDA archive instead. The same run also verified the
 Windows source-build C1083/header-path fix included in `5abf435`.
@@ -76,6 +75,22 @@ run in glibc 2.28 runtime containers on the GPU runner. Each Linux execution
 checks `getconf GNU_LIBC_VERSION`; a successful test on a newer host libc does
 not satisfy this acceptance gate. Host NVIDIA driver requirements remain
 separate from the SDK's glibc ceiling.
+
+Link static Linux consumers in the supplied `cpu` builder (EL8 GCC Toolset 13)
+when targeting this runtime baseline. Its linker supplies the nonshared C++
+compatibility routines required by GCC 13 objects. The stock EL8 GCC 8 linker
+alone cannot resolve all of those routines. This is a build requirement: the
+resulting consumer is tested against the clean runtime's system libraries and
+does not require GCC Toolset 13 to be installed on the deployment machine.
+For ordinary `auto`/`prebuilt` consumption inside this image, clear its
+maintainer-only compiler overrides while retaining the toolset on `PATH`:
+`env -u CC -u CXX -u CUDAHOSTCXX LLAMA_CPP_BUILD_MODE=prebuilt cargo build ...`.
+Otherwise the existing compiler-override guard selects a source build in
+`auto` or rejects it in `prebuilt`. The CI's `runtime.py external` command
+already uses explicit external mode.
+Static archives do not set the final executable's libc/libstdc++ baseline by
+themselves; a consumer linked on a newer distribution still needs its own ABI
+audit.
 
 `native/Dockerfile` has `cpu`, `cuda13` and `cuda12` build targets. They share
 the glibc 2.28 build environment. Only CUDA toolkits are copied from the pinned
@@ -105,9 +120,38 @@ defaults are unaffected.
 
 Use `linux_only=true, variant=default` to validate Linux ARM64 CPU and x64 CUDA
 SDKs, and `linux_only=true, variant=cpu` for the separate Linux x64 static CPU
-SDK. Both runs skip publication. Their new build, ABI and inference evidence
-must pass before claiming that the new SDKs support glibc 2.28. The following
-published evidence describes the earlier 2.31 SDKs only.
+SDK. Both runs skip publication and can run concurrently. Promote their exact
+archives only after build, ABI, CPU and GPU acceptance succeeds.
+
+### Verified glibc 2.28 SDKs
+
+The Linux SDKs were built at `88b42171648683e8b99ed5a72e0ee96936d35887` and
+verified in [CPU run 42594247210](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/42594247210)
+and [ARM64/CUDA run 42594242740](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/42594242740).
+All three SDKs passed independent Rust-consumer linkage and real CPU embedding
+on clean glibc 2.28. Both CUDA plugins offloaded 25/25 model layers on T4 in the
+glibc 2.28 runtime containers; CPU/GPU cosine similarity exceeded 0.999 in both
+modes. The CUDA SDK also passed CPU inference without NVIDIA libraries.
+All audited shared libraries and consumers require at most `GLIBC_2.28`,
+`GLIBCXX_3.4.25` and `CXXABI_1.3.11`. All 14 x64 CPU backend variants and both
+CUDA architecture lists remain present.
+
+The x64 CPU archive additionally passed a link/load check retaining every
+`llama_*`, `ggml_*` and `gguf_*` C API export, including the Rust common wrappers,
+against the clean glibc 2.28 runtime. This supplements the real embedding tests;
+it does not imply that every API or CUDA architecture was exercised at runtime.
+The updated locks also passed validation against all three real archives.
+Ordinary `prebuilt` mode linked the x64 CPU consumer without rebuilding native
+code and passed real embedding plus ABI checks on clean glibc 2.28.
+
+Release `zvec-0.1.154-glibc-2.28-r1` promotes the exact CI SDK archives without
+rebuilding or repackaging. Archive names and manifest release labels retain
+their original ABI-family identifiers. Each Linux lock entry overrides the
+download `release` and records the native `source_commit`, archive digest,
+manifest digest and configuration. Targets without an override use the lock's
+top-level release. Cache identity remains the archive SHA-256. The Release
+includes both consumer locks, checksums, CI evidence, supplemental API evidence
+and `provenance.json`.
 
 ### Previously published glibc 2.31 SDKs
 
@@ -116,14 +160,6 @@ verified in [CPU run 40442188943](https://github.com/zvec-ai/llama-cpp-rs/action
 and [ARM64/CUDA run 40442194019](https://github.com/zvec-ai/llama-cpp-rs/actions/runs/40442194019).
 All tested ELF requirements are at most `GLIBC_2.30`; the supported baseline
 remains glibc 2.31. Both CUDA plugins also passed real T4 GPU offload tests.
-
-That release promoted those exact CI archives without repackaging. Archive
-names and manifest release labels retain their original ABI-family identifiers;
-each Linux lock entry overrides the download `release` and records the native
-`source_commit`, archive digest, manifest digest and native configuration.
-Targets without an override use the lock's top-level release. Cache identity is
-still the archive SHA-256. The Release includes both consumer locks, checksums,
-CI evidence and `provenance.json` so the original build can be traced.
 
 CUDA 13.1.1 primary build architectures, unchanged from the pinned r1 SDK:
 `75-real;80-real;86-real;89-real;90-real;90-virtual`.
@@ -262,11 +298,11 @@ existing delay-load setup). This step does not change zg's loader or packaging.
 ## Build and release
 
 `native-release.yml` runs only via `workflow_dispatch`. Its full-matrix release
-job remains restricted to `prebuilt/0.1.154`. This build-only branch does not
-satisfy that publication gate, and `linux_only=true` always skips publication.
+job remains restricted to `prebuilt/0.1.154`. This branch uses a separate Linux
+promotion after acceptance; `linux_only=true` always skips automatic publication.
 Ordinary pushes do not rebuild or republish native SDKs. The embedded locks
-continue to select the previously published archives until a separately
-reviewed promotion records a new release name and real candidate hashes.
+select the verified glibc 2.28 promotion above. Future native changes require a
+new release name and verified hashes before consumer locks can be updated.
 Its default variant retains the original five-platform and CUDA gates. Select
 `variant=cpu` to build the three CPU-only SDKs on ordinary hosted runners,
 without CUDA toolchain setup or GPU jobs, reusing the same packaging, external

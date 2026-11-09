@@ -16,7 +16,7 @@ import fetch
 
 class ContractTests(unittest.TestCase):
     def test_manual_fetch_uses_the_target_download_release(self):
-        for target, release in [("x86_64-unknown-linux-gnu", "zvec-0.1.154-glibc-2.31-r1"),
+        for target, release in [("x86_64-unknown-linux-gnu", "zvec-0.1.154-glibc-2.28-r1"),
                                 ("aarch64-apple-darwin", RELEASE)]:
             with self.subTest(target=target), tempfile.TemporaryDirectory() as temp:
                 command = ["fetch.py", "--target", target, "--sha256", "a" * 64,

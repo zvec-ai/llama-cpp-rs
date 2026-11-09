@@ -19,14 +19,15 @@ fn variables(values: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 #[test]
-fn glibc231_download_release_applies_only_to_linux() {
+fn glibc228_download_release_applies_only_to_linux() {
     for lock in [
         automatic::runtime_lock().unwrap(),
         automatic::cpu_runtime_lock().unwrap(),
     ] {
         for target in lock.targets.keys() {
             let expected = if target.ends_with("linux-gnu") {
-                "zvec-0.1.154-glibc-2.31-r1"
+                assert_eq!(lock.targets[target].cmake["LLAMA_SUBPROCESS"], "OFF");
+                "zvec-0.1.154-glibc-2.28-r1"
             } else {
                 &lock.release
             };
