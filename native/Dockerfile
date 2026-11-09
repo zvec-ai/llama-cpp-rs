@@ -20,7 +20,7 @@ ARG RUST_VERSION=1.98.0
 # Its EL8 compatibility libraries retain the system libstdc++ ABI; do not copy
 # a newer distribution's libstdc++ into the SDK or runtime images.
 RUN dnf install --assumeyes --setopt=install_weak_deps=False \
-        gcc-toolset-13-gcc-c++ clang-libs ninja-build pkgconf-pkg-config \
+        gcc-toolset-13-gcc-c++ clang clang-libs ninja-build pkgconf-pkg-config \
     && dnf clean all
 ENV PATH=/root/.cargo/bin:/opt/rh/gcc-toolset-13/root/usr/bin:/opt/python/cp312-cp312/bin:/usr/local/bin:/usr/bin:/bin
 ENV CC=gcc CXX=g++ CUDAHOSTCXX=g++ LIBCLANG_PATH=/usr/lib64

@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-runtime-${{ github.ref }}
+  group: native-runtime-${{ github.ref }}-${{ inputs.variant }}
   cancel-in-progress: false
 
 jobs:
