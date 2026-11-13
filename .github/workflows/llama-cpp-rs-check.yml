@@ -15,6 +15,7 @@ permissions: read-all
 
 jobs:
   check:
+    if: github.repository == 'utilityai/llama-cpp-rs'
     name: Run Tests on LLama Cpp Rs
     runs-on: ubuntu-latest
     steps:
@@ -46,6 +47,7 @@ jobs:
       - name: Check that bindings are the same afterwards
         run: git diff --exit-code
   arm64:
+    if: github.repository == 'utilityai/llama-cpp-rs'
     name: Check that it builds on various targets (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     env:
@@ -86,6 +88,7 @@ jobs:
         run: cargo build --bin simple --features cuda -vv
       - run: ccache --show-stats
   mac:
+    if: github.repository == 'utilityai/llama-cpp-rs'
     name: Check that it builds on mac
     runs-on: macos-latest
     steps:
@@ -103,6 +106,7 @@ jobs:
       - name: Check that bindings are the same afterwards
         run: git diff --exit-code
   windows:
+    if: github.repository == 'utilityai/llama-cpp-rs'
     name: Check that it builds on windows
     runs-on: windows-latest
     steps:
@@ -122,6 +126,7 @@ jobs:
       - name: Check that bindings are the same afterwards
         run: git diff --exit-code
   emscripten:
+    if: github.repository == 'utilityai/llama-cpp-rs'
     name: Check that building for Emscripten works
     runs-on: ubuntu-latest
     steps:
