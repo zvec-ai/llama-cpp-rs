@@ -15,15 +15,27 @@ pub(super) const CRATE_VERSION: &str = "0.1.162";
 pub fn bindings_sha256() -> String {
     let mut hash = Sha256::new();
     for (name, bytes) in [
-        ("src/common.rs", include_bytes!("../src/common.rs").as_slice()),
+        (
+            "src/common.rs",
+            include_bytes!("../src/common.rs").as_slice(),
+        ),
         ("src/ggml.rs", include_bytes!("../src/ggml.rs").as_slice()),
         ("src/gguf.rs", include_bytes!("../src/gguf.rs").as_slice()),
         ("src/lib.rs", include_bytes!("../src/lib.rs").as_slice()),
         ("src/llama.rs", include_bytes!("../src/llama.rs").as_slice()),
         ("src/mtmd.rs", include_bytes!("../src/mtmd.rs").as_slice()),
-        ("wrapper_common.cpp", include_bytes!("../wrapper_common.cpp").as_slice()),
-        ("wrapper_common.h", include_bytes!("../wrapper_common.h").as_slice()),
-        ("wrapper_utils.h", include_bytes!("../wrapper_utils.h").as_slice()),
+        (
+            "wrapper_common.cpp",
+            include_bytes!("../wrapper_common.cpp").as_slice(),
+        ),
+        (
+            "wrapper_common.h",
+            include_bytes!("../wrapper_common.h").as_slice(),
+        ),
+        (
+            "wrapper_utils.h",
+            include_bytes!("../wrapper_utils.h").as_slice(),
+        ),
     ] {
         hash.update((name.len() as u64).to_be_bytes());
         hash.update(name.as_bytes());
@@ -256,7 +268,10 @@ pub(super) fn build_verified(root: &Path, expected: &str) -> Result<()> {
     }
     if features.contains("dynamic-backends") {
         println!("cargo:backends_dir={}", root.join("lib").display());
-        println!("cargo:rustc-env=GGML_BACKENDS_DIR={}", root.join("lib").display());
+        println!(
+            "cargo:rustc-env=GGML_BACKENDS_DIR={}",
+            root.join("lib").display()
+        );
     }
     println!("cargo:runtime_dir={}", root.display());
     println!("cargo:runtime_manifest={}", manifest_path.display());

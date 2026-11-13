@@ -371,7 +371,14 @@ pub fn resolve() -> Result<PathBuf> {
 }
 
 fn offline() -> bool {
-    ["LLAMA_CPP_OFFLINE", "CARGO_NET_OFFLINE"].iter().any(|name| {
-        std::env::var(name).is_ok_and(|value| matches!(value.to_ascii_uppercase().as_str(), "1" | "TRUE" | "ON" | "YES"))
-    })
+    ["LLAMA_CPP_OFFLINE", "CARGO_NET_OFFLINE"]
+        .iter()
+        .any(|name| {
+            std::env::var(name).is_ok_and(|value| {
+                matches!(
+                    value.to_ascii_uppercase().as_str(),
+                    "1" | "TRUE" | "ON" | "YES"
+                )
+            })
+        })
 }

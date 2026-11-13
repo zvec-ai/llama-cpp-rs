@@ -8,6 +8,8 @@ members = [
   "examples/reranker",
   "examples/mtmd",
   "generate-bindings",
+  "native/smoke",
+  "native/contracts",
 ]
 
 [workspace.dependencies]

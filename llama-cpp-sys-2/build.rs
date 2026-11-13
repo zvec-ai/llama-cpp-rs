@@ -8,12 +8,12 @@ use cmake::Config;
 use glob::glob;
 use walkdir::DirEntry;
 
+#[path = "build_support/automatic.rs"]
+mod automatic;
 #[path = "build_support/external.rs"]
 mod external;
 #[path = "build_support/source.rs"]
 mod source;
-#[path = "build_support/automatic.rs"]
-mod automatic;
 
 enum WindowsVariant {
     Msvc,
@@ -421,7 +421,13 @@ fn main() {
     println!("cargo:rerun-if-changed=build_support/external.rs");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_BUILD_MODE");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_RUNTIME_DIR");
-    for path in ["automatic.rs", "runtime-lock.json", "cpu-runtime-lock.json", "source.rs", "source-lock.json"] {
+    for path in [
+        "automatic.rs",
+        "runtime-lock.json",
+        "cpu-runtime-lock.json",
+        "source.rs",
+        "source-lock.json",
+    ] {
         println!("cargo:rerun-if-changed=build_support/{path}");
     }
     automatic::watch_environment().expect("native runtime configuration");
@@ -431,16 +437,21 @@ fn main() {
             return;
         }
         Ok("auto") | Ok("prebuilt") | Err(env::VarError::NotPresent) => {
-            assert!(env::var_os("LLAMA_CPP_RUNTIME_DIR").is_none(),
-                "LLAMA_CPP_RUNTIME_DIR requires LLAMA_CPP_BUILD_MODE=external");
+            assert!(
+                env::var_os("LLAMA_CPP_RUNTIME_DIR").is_none(),
+                "LLAMA_CPP_RUNTIME_DIR requires LLAMA_CPP_BUILD_MODE=external"
+            );
             if automatic::try_build(env::var("LLAMA_CPP_BUILD_MODE").as_deref() == Ok("prebuilt"))
-                .unwrap_or_else(|error| panic!("automatic llama.cpp runtime: {error}")) {
+                .unwrap_or_else(|error| panic!("automatic llama.cpp runtime: {error}"))
+            {
                 return;
             }
         }
         Ok("source") => {
-            assert!(env::var_os("LLAMA_CPP_RUNTIME_DIR").is_none(),
-                "LLAMA_CPP_RUNTIME_DIR requires LLAMA_CPP_BUILD_MODE=external");
+            assert!(
+                env::var_os("LLAMA_CPP_RUNTIME_DIR").is_none(),
+                "LLAMA_CPP_RUNTIME_DIR requires LLAMA_CPP_BUILD_MODE=external"
+            );
         }
         _ => panic!("LLAMA_CPP_BUILD_MODE must be auto, prebuilt, source or external"),
     }
@@ -453,13 +464,25 @@ fn main() {
 
     let target_dir = get_cargo_target_dir().unwrap();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("Failed to get CARGO_MANIFEST_DIR");
-    for name in ["LLAMA_CPP_SOURCE_DIR", "LLAMA_CPP_SOURCE_CACHE", "LLAMA_CPP_SOURCE_ARCHIVE", "LLAMA_CPP_OFFLINE", "CARGO_NET_OFFLINE", "CARGO_HOME"] {
+    for name in [
+        "LLAMA_CPP_SOURCE_DIR",
+        "LLAMA_CPP_SOURCE_CACHE",
+        "LLAMA_CPP_SOURCE_ARCHIVE",
+        "LLAMA_CPP_OFFLINE",
+        "CARGO_NET_OFFLINE",
+        "CARGO_HOME",
+    ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
-    let llama_src = source::resolve().unwrap_or_else(|error| panic!("pinned llama.cpp source: {error}"));
+    let llama_src =
+        source::resolve().unwrap_or_else(|error| panic!("pinned llama.cpp source: {error}"));
     let source_configuration = automatic::prepare_source_configuration(
-        &out_dir, &external::enabled_features(), &env::vars().collect(), &llama_src,
-    ).expect("source build configuration");
+        &out_dir,
+        &external::enabled_features(),
+        &env::vars().collect(),
+        &llama_src,
+    )
+    .expect("source build configuration");
     let build_shared_libs = cfg!(feature = "dynamic-link");
 
     let build_shared_libs = std::env::var("LLAMA_BUILD_SHARED_LIBS")
@@ -526,6 +549,8 @@ fn main() {
         };
     env::set_var("CMAKE_BUILD_PARALLEL_LEVEL", cmake_build_parallelism_level);
 
+    let clang_cl_cpp = matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc))
+        && cc::Build::new().cpp(true).get_compiler().is_like_clang_cl();
     if cfg!(feature = "common") {
         println!("cargo:rerun-if-changed=wrapper_utils.h");
         println!("cargo:rerun-if-changed=wrapper_common.h");
@@ -544,6 +569,9 @@ fn main() {
 
         if matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc)) {
             common_wrapper_build.flag("/std:c++17");
+            if clang_cl_cpp {
+                common_wrapper_build.flag("/EHsc");
+            }
         }
 
         // Suppress cc's automatic C++ stdlib link when this build script already
@@ -564,6 +592,9 @@ fn main() {
     // Build with Cmake
 
     let mut config = Config::new(&llama_src);
+    if clang_cl_cpp {
+        config.cxxflag("/EHsc");
+    }
     config.env("GIT_CEILING_DIRECTORIES", llama_src.parent().unwrap());
 
     // Would require extra source files to pointlessly
@@ -1062,7 +1093,9 @@ fn main() {
         .always_configure(false);
 
     let build_dir = config.build();
-    source_configuration.commit().expect("record source build configuration");
+    source_configuration
+        .commit()
+        .expect("record source build configuration");
 
     // The CMake build installs a ggml package config. Tell the dependent crates where it
     // is, in the DEP_LLAMA_GGML_CMAKE_DIR variable. A dependent crate that also builds
