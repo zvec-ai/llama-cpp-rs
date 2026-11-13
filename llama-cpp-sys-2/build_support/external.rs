@@ -251,13 +251,6 @@ pub(super) fn build_verified(root: &Path, expected: &str) -> Result<()> {
         "cargo:rustc-link-search=native={}",
         root.join("lib").display()
     );
-    // Apple still needs its platform SDK/linker for Rust itself. Locate the
-    // compiler runtime exactly as upstream does; do not invoke a C++ build.
-    if env::var("TARGET")?.ends_with("-apple-darwin") {
-        if let Some(path) = super::macos_link_search_path() {
-            println!("cargo:rustc-link-search={path}");
-        }
-    }
     for library in &manifest.link_libraries {
         println!("cargo:rustc-link-lib={library}");
     }
