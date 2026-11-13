@@ -60,6 +60,16 @@ def bindings_sha256():
     return value.hexdigest()
 
 
+def lock_cmake(cache):
+    """Canonical configuration compared by automatic::verify_bundle."""
+    values = {key: value for key, value in cache.items()
+              if key not in ("CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER", "GGML_BACKEND_DIR")}
+    minimum = re.search(r"-mmacosx-version-min=(\S+)", values.get("CMAKE_CXX_FLAGS", ""))
+    if minimum:
+        values["MACOSX_DEPLOYMENT_TARGET"] = minimum[1]
+    return values
+
+
 def run(args, **kwargs):
     print("+", " ".join(map(str, args)), flush=True)
     return subprocess.run(list(map(str, args)), check=True, cwd=ROOT, **kwargs)

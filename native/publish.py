@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 from fetch import extract
-from runtime import RELEASE, CPU_RELEASE, TARGETS, CPU_TARGETS, REVISION, digest, audit_cache, CRATE_VERSION, verify
+from runtime import RELEASE, CPU_RELEASE, TARGETS, CPU_TARGETS, REVISION, digest, audit_cache, CRATE_VERSION, verify, lock_cmake
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--assets", type=Path, required=True)
@@ -41,9 +41,7 @@ for target in targets:
             or manifest["crate_version"] != CRATE_VERSION or manifest["llama_cpp_revision"] != REVISION):
         raise RuntimeError("Release inputs do not match the current native ABI")
     audit_cache(manifest["primary_cmake"], target, variant=args.variant, glibc228="linux_abi" in manifest)
-    manifests[target].update(features=manifest["features"], cmake={
-        key: value for key, value in manifest["primary_cmake"].items()
-        if key not in ("CMAKE_CXX_COMPILER", "CMAKE_CUDA_COMPILER", "GGML_BACKEND_DIR")})
+    manifests[target].update(features=manifest["features"], cmake=lock_cmake(manifest["primary_cmake"]))
     lines.append(f"{expected}  {name}\n")
     assets += [archive, path]
 checksums = args.assets / "SHA256SUMS"

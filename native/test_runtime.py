@@ -8,13 +8,21 @@ import unittest
 from unittest.mock import patch
 import runpy
 from fetch import extract
-from runtime import bindings_sha256, CRATE_VERSION, ARCH12, ARCH13, TARGETS, audit_cache, digest, verify, RELEASE, REVISION, recover_incomplete_cmake, verify_source, source_from_build
+from runtime import bindings_sha256, lock_cmake, CRATE_VERSION, ARCH12, ARCH13, TARGETS, audit_cache, digest, verify, RELEASE, REVISION, recover_incomplete_cmake, verify_source, source_from_build
 from runtime import CPU_TARGETS, CPU_RELEASE, ROOT, primary, sdk_features, package, seal, write_json, main
 import hashlib
 import fetch
 
 
 class ContractTests(unittest.TestCase):
+    def test_lock_configuration_preserves_macos_deployment_minimum(self):
+        cache = {"CMAKE_CXX_FLAGS": " -O3 -mmacosx-version-min=14.0 -w",
+                 "CMAKE_CXX_COMPILER": "/builder/clang++", "GGML_BACKEND_DIR": "/builder/plugins",
+                 "GGML_METAL": "ON"}
+        self.assertEqual(lock_cmake(cache), {"CMAKE_CXX_FLAGS": cache["CMAKE_CXX_FLAGS"],
+                                           "MACOSX_DEPLOYMENT_TARGET": "14.0", "GGML_METAL": "ON"})
+        self.assertEqual(lock_cmake({"GGML_CUDA": "ON"}), {"GGML_CUDA": "ON"})
+
     def test_manual_fetch_uses_the_target_download_release(self):
         for target, release in [("x86_64-unknown-linux-gnu", "zvec-0.1.162-glibc-2.28-r1"),
                                 ("aarch64-apple-darwin", RELEASE)]:
