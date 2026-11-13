@@ -3,3 +3,7 @@ llama-cpp-sys-2/src/ggml.rs linguist-generated
 llama-cpp-sys-2/src/gguf.rs linguist-generated
 llama-cpp-sys-2/src/llama.rs linguist-generated
 llama-cpp-sys-2/src/mtmd.rs linguist-generated
+
+# SDK ABI fingerprints must be identical across Git checkout platforms.
+llama-cpp-sys-2/src/*.rs text eol=lf
+llama-cpp-sys-2/wrapper* text eol=lf

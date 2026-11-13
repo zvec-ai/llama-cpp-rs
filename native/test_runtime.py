@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import runpy
+import shutil
+import subprocess
 from fetch import extract
 from runtime import bindings_sha256, lock_cmake, CRATE_VERSION, ARCH12, ARCH13, TARGETS, audit_cache, digest, verify, RELEASE, REVISION, recover_incomplete_cmake, verify_source, source_from_build
 from runtime import CPU_TARGETS, CPU_RELEASE, ROOT, primary, sdk_features, package, seal, write_json, main
@@ -15,6 +17,26 @@ import fetch
 
 
 class ContractTests(unittest.TestCase):
+    def test_bindings_fingerprint_survives_windows_git_checkout(self):
+        expected = bindings_sha256()
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            shutil.copy2(ROOT / ".gitattributes", repo / ".gitattributes")
+            files = list((ROOT / "llama-cpp-sys-2/src").glob("*.rs"))
+            files += list((ROOT / "llama-cpp-sys-2").glob("wrapper*"))
+            for source in files:
+                destination = repo / source.relative_to(ROOT)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+            checkout = Path(temp) / "checkout"
+            for arguments in (["init", "-q"], ["add", "."],
+                              ["-c", "core.autocrlf=true", "checkout-index", "--all",
+                               f"--prefix={checkout.as_posix()}/"]):
+                subprocess.run(["git", *arguments], cwd=repo, check=True, capture_output=True)
+            with patch("runtime.ROOT", checkout):
+                self.assertEqual(bindings_sha256(), expected)
+
     def test_lock_configuration_preserves_macos_deployment_minimum(self):
         cache = {"CMAKE_CXX_FLAGS": " -O3 -mmacosx-version-min=14.0 -w",
                  "CMAKE_CXX_COMPILER": "/builder/clang++", "GGML_BACKEND_DIR": "/builder/plugins",

@@ -364,11 +364,34 @@ jobs:
           name: gpu-evidence-windows
           path: target/gpu-evidence/
 
+  metadata:
+    needs: build
+    if: '!inputs.linux_only'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: release
+          merge-multiple: true
+      - name: Verify every SDK and prepare consistent cross-platform pins
+        run: python3 native/publish.py --assets release --variant ${{ (inputs.variant || 'default') }} --prepare-only
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-metadata
+          path: |
+            release/*runtime-lock.json
+            release/SHA256SUMS
+            release/release-notes.md
+
   release:
-    needs: [build, cuda-linux, cuda-windows]
+    needs: [build, metadata, cuda-linux, cuda-windows]
     if: >-
       always() && !cancelled() && !inputs.linux_only && inputs.publish && startsWith(github.ref, 'refs/heads/prebuilt/0.1.162') &&
-      needs.build.result == 'success' &&
+      needs.build.result == 'success' && needs.metadata.result == 'success' &&
       ((inputs.variant || 'default') == 'cpu' || (needs.cuda-linux.result == 'success' && needs.cuda-windows.result == 'success'))
     runs-on: ubuntu-24.04
     permissions:
