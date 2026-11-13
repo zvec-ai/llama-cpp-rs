@@ -67,6 +67,8 @@ NVIDIA runtime/driver libraries are supplied by the deployment environment.
 
 ## Validation and release
 
+The completed checks for this refresh are recorded in [VALIDATION.md](VALIDATION.md).
+
 ```sh
 cargo fmt --all --check
 cargo test --locked -p native-contract-tests
