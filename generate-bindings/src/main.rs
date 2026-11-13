@@ -22,7 +22,9 @@ fn main() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace = manifest_dir.parent().unwrap();
     let sys = workspace.join("llama-cpp-sys-2");
-    let llama = sys.join("llama.cpp");
+    let llama = std::env::var_os("LLAMA_CPP_SOURCE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| sys.join("llama.cpp"));
 
     #[allow(deprecated)]
     let rust_target = RustTarget::Stable_1_77;
@@ -30,6 +32,7 @@ fn main() {
     let enums = EnumSignedness::default();
 
     let mut builder = bindgen::Builder::default()
+        .clang_arg(format!("-I{}", llama.display()))
         .clang_arg(format!("-I{}", llama.join("include").display()))
         .clang_arg(format!("-I{}", llama.join("ggml/include").display()))
         .clang_arg(format!("-I{}", llama.join("tools/mtmd/include").display()))

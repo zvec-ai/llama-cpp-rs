@@ -7,47 +7,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/utilityai/llama-cpp-rs"
 links = "llama"
 
-include = [
-    # Our files
-    "README.md",
-    "wrapper.h",
-    "wrapper_common.h",
-    "wrapper_common.cpp",
-    "wrapper_utils.h",
-    "build.rs",
-    "/build_support",
-    "/src",
-
-    # Everything needed for building GGML (CMake, include and src)
-    #
-    # `llama.cpp` already only includes the most important stuff
-    # from https://github.com/ggml-org/ggml.
-    "/llama.cpp/ggml",
-
-    # lLama.cpp's own sources.
-    "/llama.cpp/include",
-    "/llama.cpp/common",
-    "/llama.cpp/src",
-
-    # mtmd sources. Contains tests files that we don't want, so those
-    # are filtered out.
-    "/llama.cpp/tools/mtmd/**/*.h",
-    "/llama.cpp/tools/mtmd/**/*.cpp",
-    "/llama.cpp/tools/mtmd/**/CMakeLists.txt",
-
-    # Vendored sources.
-    "/llama.cpp/vendor",
-
-    # Various build files.
-    "/llama.cpp/convert_hf_to_gguf.py", # Yes, it's required
-    "/llama.cpp/pocs",
-    "/llama.cpp/CMakeLists.txt",
-    "/llama.cpp/cmake",
-    "/llama.cpp/tools/CMakeLists.txt",
-
-    # License.
-    "/llama.cpp/LICENSE",
-]
+include = ["README.md", "wrapper_common.h", "wrapper_common.cpp", "wrapper_utils.h", "build.rs", "/build_support", "/src"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -62,6 +22,9 @@ walkdir = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
 
 [features]
 default = ["common"]

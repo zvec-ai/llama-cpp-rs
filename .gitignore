@@ -8,3 +8,6 @@ target/
 
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
+__pycache__/
+*.pyc
+/llama-cpp-sys-2/llama.cpp/

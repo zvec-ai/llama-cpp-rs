@@ -10,6 +10,8 @@ use walkdir::DirEntry;
 
 #[path = "build_support/external.rs"]
 mod external;
+#[path = "build_support/source.rs"]
+mod source;
 
 enum WindowsVariant {
     Msvc,
@@ -437,7 +439,10 @@ fn main() {
 
     let target_dir = get_cargo_target_dir().unwrap();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("Failed to get CARGO_MANIFEST_DIR");
-    let llama_src = Path::new(&manifest_dir).join("llama.cpp");
+    for name in ["LLAMA_CPP_SOURCE_DIR", "LLAMA_CPP_SOURCE_CACHE", "LLAMA_CPP_SOURCE_ARCHIVE", "LLAMA_CPP_OFFLINE", "CARGO_NET_OFFLINE", "CARGO_HOME"] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    let llama_src = source::resolve().unwrap_or_else(|error| panic!("pinned llama.cpp source: {error}"));
     let build_shared_libs = cfg!(feature = "dynamic-link");
 
     let build_shared_libs = std::env::var("LLAMA_BUILD_SHARED_LIBS")
@@ -542,6 +547,7 @@ fn main() {
     // Build with Cmake
 
     let mut config = Config::new(&llama_src);
+    config.env("GIT_CEILING_DIRECTORIES", llama_src.parent().unwrap());
 
     // Would require extra source files to pointlessly
     // be included in what's uploaded to and downloaded from
