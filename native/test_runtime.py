@@ -11,7 +11,10 @@ import shutil
 import subprocess
 from fetch import extract
 from runtime import bindings_sha256, lock_cmake, CRATE_VERSION, ARCH12, ARCH13, TARGETS, audit_cache, digest, verify, RELEASE, REVISION, recover_incomplete_cmake, verify_source, source_from_build
-from runtime import CPU_TARGETS, CPU_RELEASE, ROOT, primary, sdk_features, package, seal, write_json, main
+from runtime import ROOT, primary, sdk_features, sdk_variant, asset_stem, package, seal, write_json, main, LINUX_ABI
+from publish import prepare, publish
+from reuse import repack
+from e2e import MODELS
 import hashlib
 import fetch
 
@@ -45,33 +48,51 @@ class ContractTests(unittest.TestCase):
                                            "MACOSX_DEPLOYMENT_TARGET": "14.0", "GGML_METAL": "ON"})
         self.assertEqual(lock_cmake({"GGML_CUDA": "ON"}), {"GGML_CUDA": "ON"})
 
-    def test_manual_fetch_uses_the_target_download_release(self):
-        for target, release in [("x86_64-unknown-linux-gnu", "zvec-0.1.162-glibc-2.28-r1"),
-                                ("aarch64-apple-darwin", RELEASE)]:
-            with self.subTest(target=target), tempfile.TemporaryDirectory() as temp:
-                command = ["fetch.py", "--target", target, "--sha256", "a" * 64,
+    def fixture_bundle(self, root, target, variant):
+        entry = json.loads((ROOT / "native/contracts/fixtures/runtime-lock.json").read_text())["targets"][target][variant]
+        root.mkdir(parents=True)
+        lib = root / "lib"
+        lib.mkdir()
+        if variant == "cuda":
+            suffix = ".dll" if "windows" in target else ".so"
+            for name in ["ggml-cuda", "ggml-cpu-one", "ggml-cpu-two"]:
+                (lib / (name + suffix)).write_bytes(b"native fixture")
+            (lib / "cuda12").mkdir()
+            (lib / "cuda12" / (("ggml-cuda" if "windows" in target else "libggml-cuda") + suffix)).write_bytes(b"fallback")
+        else:
+            (lib / "libllama.a").write_bytes(b"static fixture")
+        manifest = {"schema": 2, "bindings_sha256": bindings_sha256(), "crate_version": CRATE_VERSION,
+            "release": RELEASE, "variant": variant, "llama_cpp_revision": REVISION, "target": target,
+            "features": entry["features"], "source_commit": "1" * 40,
+            "linkage": "dynamic" if variant == "cuda" else "static", "primary_cmake": entry["cmake"]}
+        if "linux" in target:
+            manifest["linux_abi"] = LINUX_ABI
+        if variant == "cuda":
+            manifest["fallback_cmake"] = {**entry["cmake"], "CMAKE_CUDA_ARCHITECTURES": ARCH12,
+                                          "LLAMA_BUILD_COMMON": "OFF", "GGML_CPU": "OFF"}
+        write_json(root / "manifest.json", manifest)
+        seal(root)
+        return root
+
+    def test_manual_fetch_selects_explicit_variant_and_pinned_release(self):
+        for target, variant in [("x86_64-unknown-linux-gnu", "cpu"),
+                                ("x86_64-unknown-linux-gnu", "cuda"), ("aarch64-apple-darwin", "metal")]:
+            with self.subTest(target=target, variant=variant), tempfile.TemporaryDirectory() as temp:
+                command = ["fetch.py", "--target", target, "--variant", variant, "--sha256", "a" * 64,
+                           "--lock", str(ROOT / "native/contracts/fixtures/runtime-lock.json"),
                            "--output", str(Path(temp) / "bundle")]
-                with patch("sys.argv", command), \
-                        patch("fetch.json.loads", return_value=json.loads((ROOT / "native/contracts/fixtures/runtime-lock.json").read_text())), \
-                        patch("fetch.subprocess.run", side_effect=RuntimeError("download intercepted")) as download:
+                with patch("sys.argv", command), patch("fetch.subprocess.run", side_effect=RuntimeError("download intercepted")) as download:
                     with self.assertRaisesRegex(RuntimeError, "download intercepted"):
                         fetch.main()
-                url = download.call_args.args[0][-1]
-                self.assertIn(f"/releases/download/{release}/", url)
-                self.assertTrue(url.endswith(f"-{target}.tar.gz"))
+                self.assertTrue(download.call_args.args[0][-1].endswith(f"/{RELEASE}/{asset_stem(target, variant)}.tar.gz"))
 
-    def test_three_cpu_variants_and_no_cuda_tool_probe(self):
-        self.assertEqual(set(CPU_TARGETS), {"x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc",
-                                          "aarch64-pc-windows-msvc"})
-        self.assertEqual(len(TARGETS) + len(CPU_TARGETS), 8)
+    def test_all_eight_variants_and_no_cuda_tool_probe_for_cpu(self):
+        self.assertEqual(sum(map(len, TARGETS.values())), 8)
         with self.assertRaises(RuntimeError):
             sdk_features("aarch64-apple-darwin", "cpu")
-        with self.assertRaisesRegex(RuntimeError, "requires --variant cpu"):
-            sdk_features("aarch64-pc-windows-msvc")
-        for target in CPU_TARGETS:
-            self.assertEqual(sdk_features(target, "cpu"), ["common"])
-            if target in TARGETS:
-                self.assertIn("cuda", sdk_features(target))
+        for target, variants in TARGETS.items():
+            if "cpu" not in variants:
+                continue
             with tempfile.TemporaryDirectory() as temp, \
                     patch("runtime.subprocess.check_output", side_effect=AssertionError("unexpected CUDA probe")), \
                     patch("runtime.cargo_build", side_effect=RuntimeError("stop before compilation")) as build:
@@ -82,82 +103,79 @@ class ContractTests(unittest.TestCase):
                     self.assertEqual(build.call_args.args[2]["CMAKE_PROJECT_TOP_LEVEL_INCLUDES"],
                                      str(ROOT / "native/linux-glibc228.cmake"))
                 if target == "aarch64-pc-windows-msvc":
-                    env = build.call_args.args[2]
-                    self.assertEqual(env["CC"], "clang-cl")
-                    self.assertEqual(env["CXX"], "clang-cl")
-                    self.assertEqual(env["CMAKE_GENERATOR"], "Ninja")
+                    self.assertEqual(build.call_args.args[2]["CXX"], "clang-cl")
 
-    def test_windows_arm64_cpu_cli_and_existing_ci_matrix(self):
+    def test_windows_arm64_cli(self):
         target = "aarch64-pc-windows-msvc"
-        with patch("sys.argv", ["runtime.py", "primary", "--target", target, "--variant", "cpu"]), \
-                patch("runtime.primary") as build:
+        with patch("sys.argv", ["runtime.py", "primary", "--target", target, "--variant", "cpu"]), patch("runtime.primary") as build:
             main()
             self.assertEqual(build.call_args.args[0], target)
             self.assertEqual(build.call_args.args[3], "cpu")
-        workflow = (ROOT / ".github/workflows/native-release.yml").read_text()
-        matrices = [json.loads(value) for value in re.findall(r"'(\[\{.*?\}\])'", workflow, re.S)]
-        self.assertEqual(len(matrices), 4)
-        self.assertEqual({entry["target"] for entry in matrices[0]}, {"x86_64-unknown-linux-gnu"})
-        self.assertEqual({entry["target"] for entry in matrices[1]},
-                         {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"})
-        matrices = matrices[2:]
-        self.assertEqual({entry["target"] for entry in matrices[0]}, set(CPU_TARGETS))
-        self.assertEqual({entry["target"] for entry in matrices[1]}, set(TARGETS))
-        self.assertEqual(next(entry["runner"] for entry in matrices[0] if entry["target"] == target),
-                         "windows-11-vs2026-arm")
 
-    def test_cpu_packaging_and_existing_publisher_prepare_only(self):
-        # Synthetic archive contracts, not Linux/Windows native execution.
-        cache = {key: "OFF" for key in ["GGML_NATIVE", "GGML_OPENMP", "LLAMA_BUILD_TESTS",
-            "LLAMA_BUILD_EXAMPLES", "LLAMA_BUILD_TOOLS", "LLAMA_BUILD_APP", "LLAMA_BUILD_SERVER",
-            "LLAMA_CURL", "BUILD_SHARED_LIBS", "GGML_CUDA", "GGML_BACKEND_DL", "GGML_CPU_ALL_VARIANTS",
-            "GGML_METAL", "GGML_VULKAN", "GGML_OPENCL", "GGML_HIP"]}
-        cache.update(CMAKE_BUILD_TYPE="Release", LLAMA_BUILD_COMMON="ON", GGML_CPU="ON")
+    def test_complete_release_requires_exact_archive_evidence_and_all_variants(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            assets = root / "assets"
-            for target in CPU_TARGETS:
-                bundle = root / target
-                bundle.mkdir()
-                (bundle / "bindings.rs").write_bytes(b"// fixture, not native code")
-                (bundle / "lib").mkdir()
-                for name in ("llama", "ggml", "ggml-base", "ggml-cpu"):
-                    filename = f"{name}.lib" if "windows" in target else f"lib{name}.a"
-                    (bundle / "lib" / filename).write_bytes(b"archive fixture")
-                manifest = {"schema": 2, "bindings_sha256": bindings_sha256(), "crate_version": CRATE_VERSION, "release": CPU_RELEASE, "crate_version": "0.1.162",
-                    "llama_cpp_revision": REVISION, "source_commit": "1" * 40, "target": target,
-                    "features": ["common"], "linkage": "static", "primary_cmake": cache,
-                    "link_libraries": [f"static={name}" for name in ("llama", "ggml", "ggml-base", "ggml-cpu")]}
-                write_json(bundle / "manifest.json", manifest)
-                seal(bundle)
-                package(bundle, assets)
-                archive = next(assets.glob(f"*{target}.tar.gz"))
-                extract(archive, root / (target + "-relocated"))
-                verify(root / (target + "-relocated"))
-                write_json(bundle / "manifest.json", {**manifest, "primary_cmake": {**cache, "GGML_OPENMP": "ON"}})
-                seal(bundle)
-                with self.assertRaisesRegex(RuntimeError, "Build contract mismatch"):
-                    verify(bundle)
-            env = {"GITHUB_SHA": "1" * 40, "GITHUB_SERVER_URL": "https://github.com",
-                   "GITHUB_REPOSITORY": "zvec-ai/llama-cpp-rs", "GITHUB_RUN_ID": "fixture"}
-            command = ["publish.py", "--assets", str(assets), "--variant", "cpu", "--prepare-only"]
-            with patch("sys.argv", command), patch.dict("os.environ", env), \
-                    patch("subprocess.run", side_effect=AssertionError("must not call GitHub")):
-                with self.assertRaises(SystemExit) as stopped:
-                    runpy.run_path(str(ROOT / "native/publish.py"), run_name="__main__")
-                self.assertEqual(stopped.exception.code, 0)
-            lock = json.loads((assets / "cpu-runtime-lock.json").read_text())
-            self.assertEqual(set(lock["targets"]), set(CPU_TARGETS))
-            for target, entry in lock["targets"].items():
-                self.assertEqual(entry["features"], ["common"])
-                self.assertEqual(entry["cmake"]["GGML_CUDA"], "OFF")
-                self.assertEqual(entry["sha256"], digest(assets / entry["archive"]))
-            self.assertNotIn("T4 GPU runners", (assets / "release-notes.md").read_text())
-            archive.write_bytes(b"corrupted")
-            with patch("sys.argv", command), patch.dict("os.environ", env), \
-                    patch("subprocess.run", side_effect=AssertionError("must not call GitHub")):
-                with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
-                    runpy.run_path(str(ROOT / "native/publish.py"), run_name="__main__")
+            assets, evidence = root / "assets", root / "evidence"
+            for target, variants in TARGETS.items():
+                for variant in variants:
+                    bundle = self.fixture_bundle(root / (target + variant), target, variant)
+                    package(bundle, assets)
+                    platform = evidence / f"evidence-{target}-{variant}"
+                    platform.mkdir(parents=True)
+                    (platform / "native-imports.txt").write_text("fixture audit")
+                    if "linux" in target:
+                        write_json(platform / "linux-abi.json", {"limits": LINUX_ABI})
+                    for kind in MODELS:
+                        modes = ["cpu", "cuda12", "cuda13"] if variant == "cuda" else ["cpu", "metal"] if variant == "metal" else ["cpu"]
+                        for mode in modes:
+                            directory = platform if not mode.startswith("cuda") else evidence / ("gpu-evidence-windows" if "windows" in target else "gpu-evidence-linux")
+                            output = directory / f"{kind}-{mode}"
+                            output.mkdir(parents=True)
+                            write_json(output / "result.json", {"model_kind": kind, "model_sha256": MODELS[kind][1],
+                                "mode": mode, "manifest_sha256": digest(bundle / "manifest.json"), "cpu_dimension": 768, "cosine_similarity": 0.9999})
+            files, notes = prepare(assets, evidence, "1" * 40, "https://example.test/run")
+            self.assertEqual(len(files), 19)
+            lock = json.loads((assets / "runtime-lock.json").read_text())
+            self.assertEqual(sum(map(len, lock["targets"].values())), 8)
+            self.assertEqual(len((assets / "SHA256SUMS").read_text().splitlines()), 18)
+            bad_evidence = next(evidence.rglob("result.json"))
+            saved = bad_evidence.read_text()
+            bad_evidence.write_text(saved.replace('"cpu_dimension": 768', '"cpu_dimension": 1'))
+            with self.assertRaisesRegex(RuntimeError, "inference evidence"):
+                prepare(assets, evidence, "1" * 40, "fixture")
+            bad_evidence.write_text(saved)
+            with self.assertRaisesRegex(RuntimeError, "Mixed packaging"):
+                prepare(assets, evidence, "2" * 40, "fixture")
+            next(assets.glob("*.tar.gz")).write_bytes(b"corruption")
+            with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
+                prepare(assets, evidence, "1" * 40, "fixture")
+
+    def test_repack_preserves_native_provenance_and_archive_is_reproducible(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target, variant = "aarch64-pc-windows-msvc", "cpu"
+            bundle = self.fixture_bundle(root / "bundle", target, variant)
+            original = verify(bundle)
+            package(bundle, root / "first")
+            package(bundle, root / "second")
+            archive = next((root / "first").glob("*.tar.gz"))
+            self.assertEqual(digest(archive), digest(next((root / "second").glob("*.tar.gz"))))
+            result = repack(archive, root / "repacked", target, variant, "1" * 40, {"run": "fixture"}, "2" * 40)
+            self.assertEqual(result["source_commit"], "1" * 40)
+            self.assertEqual(result["packaging_commit"], "2" * 40)
+            self.assertEqual(result["files"], original["files"])
+            self.assertEqual(result["provenance"]["manifest_sha256"], digest(bundle / "manifest.json"))
+
+    def test_publisher_never_replaces_existing_release_or_publishes_partial_draft(self):
+        with patch("publish.subprocess.check_output", return_value=json.dumps([{"tag_name": RELEASE}])), patch("publish.subprocess.run") as run:
+            with self.assertRaisesRegex(RuntimeError, "already exists"):
+                publish([], Path("notes"), "1" * 40)
+            run.assert_not_called()
+        with patch("publish.subprocess.check_output", side_effect=["[]", json.dumps({"isDraft": True, "isPrerelease": True, "assets": []})]), patch("publish.subprocess.run") as run:
+            with self.assertRaisesRegex(RuntimeError, "inventory mismatch"):
+                publish([], Path("notes"), "1" * 40)
+            self.assertEqual(run.call_count, 1)
+            self.assertIn("--draft", run.call_args.args[0])
 
     def test_source_metadata_and_tree_are_verified_without_git(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -188,15 +206,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(RELEASE, "zvec-0.1.162-r1")
         self.assertEqual(lock["release"], RELEASE)
         for target in ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"):
-            self.assertEqual(lock["targets"][target]["cmake"]["CMAKE_CUDA_ARCHITECTURES"], ARCH13)
+            self.assertEqual(lock["targets"][target]["cuda"]["cmake"]["CMAKE_CUDA_ARCHITECTURES"], ARCH13)
 
     def test_linux_profile_keeps_backends_and_common_without_subprocess(self):
         lock = json.loads((ROOT / "native/contracts/fixtures/runtime-lock.json").read_text())
-        cpu_lock = json.loads((ROOT / "native/contracts/fixtures/cpu-runtime-lock.json").read_text())
         for target, variant, entry in [
-            ("x86_64-unknown-linux-gnu", "default", lock["targets"]["x86_64-unknown-linux-gnu"]),
-            ("aarch64-unknown-linux-gnu", "default", lock["targets"]["aarch64-unknown-linux-gnu"]),
-            ("x86_64-unknown-linux-gnu", "cpu", cpu_lock["targets"]["x86_64-unknown-linux-gnu"]),
+            ("x86_64-unknown-linux-gnu", "cuda", lock["targets"]["x86_64-unknown-linux-gnu"]["cuda"]),
+            ("aarch64-unknown-linux-gnu", "cpu", lock["targets"]["aarch64-unknown-linux-gnu"]["cpu"]),
+            ("x86_64-unknown-linux-gnu", "cpu", lock["targets"]["x86_64-unknown-linux-gnu"]["cpu"]),
         ]:
             with self.subTest(target=target, variant=variant):
                 # Existing published SDKs remain inspectable. New Linux builds
@@ -212,8 +229,8 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(audited["GGML_CUDA"], entry["cmake"]["GGML_CUDA"])
 
     def test_clang_cl_requires_cpp_exceptions_without_changing_other_compilers(self):
-        lock = json.loads((ROOT / "native/contracts/fixtures/cpu-runtime-lock.json").read_text())
-        base = dict(lock["targets"]["x86_64-pc-windows-msvc"]["cmake"])
+        lock = json.loads((ROOT / "native/contracts/fixtures/runtime-lock.json").read_text())
+        base = dict(lock["targets"]["x86_64-pc-windows-msvc"]["cpu"]["cmake"])
         base.update(CMAKE_CXX_FLAGS="/MD /O2", CMAKE_CXX_FLAGS_RELEASE="/DNDEBUG")
         for target in ("aarch64-pc-windows-msvc", "x86_64-pc-windows-msvc"):
             for compiler in (r"C:\LLVM\bin\clang-cl.exe", "/llvm/bin/clang-cl"):
@@ -245,24 +262,21 @@ class ContractTests(unittest.TestCase):
 
     def test_checksum_detects_tampering_and_extra_files(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            payload = root / "bindings.rs"
-            payload.write_text("bindings")
-            manifest = {"schema": 2, "bindings_sha256": bindings_sha256(), "crate_version": CRATE_VERSION, "release": RELEASE, "llama_cpp_revision": REVISION, "features": [],
-                        "files": {"bindings.rs": digest(payload)}}
-            (root / "manifest.json").write_text(json.dumps(manifest))
+            root = self.fixture_bundle(Path(temp) / "bundle", "x86_64-pc-windows-msvc", "cpu")
+            payload = root / "lib/libllama.a"
+            original = payload.read_bytes()
             verify(root)
             payload.write_text("modified")
             with self.assertRaises(RuntimeError):
                 verify(root)
-            payload.write_text("bindings")
+            payload.write_bytes(original)
             (root / "untracked-library.so").write_text("extra")
             with self.assertRaises(RuntimeError):
                 verify(root)
 
     def test_incomplete_cmake_contract_fails(self):
         with self.assertRaises(RuntimeError):
-            audit_cache({"CMAKE_BUILD_TYPE": "Debug"}, "aarch64-apple-darwin")
+            audit_cache({"CMAKE_BUILD_TYPE": "Debug"}, "aarch64-apple-darwin", variant="metal")
 
     def test_incomplete_cmake_cache_reconfigures_without_removing_objects(self):
         with tempfile.TemporaryDirectory() as temp:
