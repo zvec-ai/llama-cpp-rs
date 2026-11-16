@@ -48,6 +48,8 @@ jobs:
         with:
           submodules: false
           persist-credentials: false
+          # Same-user ephemeral checkouts need no global Git configuration.
+          set-safe-directory: ${{ runner.environment == 'github-hosted' }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
