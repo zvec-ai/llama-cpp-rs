@@ -1,25 +1,6 @@
 fn default_fixture() -> Result<automatic::RuntimeLock, serde_json::Error> {
     serde_json::from_str(include_str!("../fixtures/runtime-lock.json"))
 }
-fn cpu_fixture() -> Result<automatic::RuntimeLock, serde_json::Error> {
-    serde_json::from_str(include_str!("../fixtures/cpu-runtime-lock.json"))
-}
-#[test]
-fn upgrade_never_reuses_old_published_sdks() {
-    for lock in [
-        automatic::runtime_lock().unwrap(),
-        automatic::cpu_runtime_lock().unwrap(),
-    ] {
-        assert!(lock.release.contains(super::external::CRATE_VERSION));
-        for (target, bundle) in &lock.targets {
-            assert!(lock
-                .release_for(target)
-                .unwrap()
-                .contains(super::external::CRATE_VERSION));
-            assert!(bundle.archive.contains(super::external::CRATE_VERSION));
-        }
-    }
-}
 use super::{automatic_contract as automatic, external_contract as external};
 use flate2::{write::GzEncoder, Compression};
 use serde_json::json;
@@ -41,51 +22,63 @@ fn variables(values: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 #[test]
-fn glibc228_download_release_applies_only_to_linux() {
-    for lock in [default_fixture().unwrap(), cpu_fixture().unwrap()] {
-        for target in lock.targets.keys() {
-            let expected = if target.ends_with("linux-gnu") {
-                assert_eq!(lock.targets[target].cmake["LLAMA_SUBPROCESS"], "OFF");
-                "zvec-0.1.162-glibc-2.28-r1"
-            } else {
-                &lock.release
-            };
-            assert_eq!(lock.release_for(target).unwrap(), expected);
+fn unified_release_selects_all_eight_variants_without_gpu_probing() {
+    let lock = default_fixture().unwrap();
+    assert_eq!(lock.schema, 2);
+    assert_eq!(lock.targets.values().map(|v| v.len()).sum::<usize>(), 8);
+    for (target, variants) in &lock.targets {
+        for (variant, bundle) in variants {
+            let (selected, entry) =
+                automatic::select_runtime(&lock, target, &bundle.features, &variables(&[]))
+                    .unwrap();
+            assert_eq!(selected, variant);
+            assert_eq!(
+                entry.archive,
+                format!(
+                    "llama-cpp-runtime-{}-{target}-{variant}.tar.gz",
+                    lock.release
+                )
+            );
+            if target.ends_with("linux-gnu") {
+                assert_eq!(entry.cmake["LLAMA_SUBPROCESS"], "OFF");
+            }
         }
-        assert!(lock.release_for("unknown-target").is_err());
+    }
+    let arm = &lock.targets["aarch64-pc-windows-msvc"]["cpu"];
+    assert!(arm.cmake["CMAKE_CXX_FLAGS"]
+        .split_whitespace()
+        .any(|flag| flag == "/EHsc"));
+    assert!(
+        automatic::select_runtime(&lock, "unknown", &mac_features(), &variables(&[])).is_none()
+    );
+}
+
+#[test]
+fn published_lock_never_reuses_old_abi() {
+    let lock = automatic::runtime_lock().unwrap();
+    assert!(lock.release.contains(super::external::CRATE_VERSION));
+    for variants in lock.targets.values() {
+        for bundle in variants.values() {
+            assert!(bundle.archive.contains(super::external::CRATE_VERSION));
+        }
     }
 }
 
 #[test]
-fn cpu_variants_select_before_download_and_keep_native_options_strict() {
-    let legacy = default_fixture().unwrap();
-    let cpu = cpu_fixture().unwrap();
-    assert_eq!(cpu.targets.len(), 3);
-    let locks = [legacy, cpu];
+fn cpu_and_cuda_selection_remain_distinct_and_native_options_strict() {
+    let lock = default_fixture().unwrap();
     for target in [
         "x86_64-unknown-linux-gnu",
         "x86_64-pc-windows-msvc",
         "aarch64-pc-windows-msvc",
     ] {
         let features = BTreeSet::from(["common".into()]);
-        let selected =
-            automatic::select_runtime(&locks, target, &features, &variables(&[])).unwrap();
-        assert_eq!(selected.release, "zvec-0.1.162-cpu-r1");
         assert_eq!(
-            selected.targets[target].archive,
-            format!("llama-cpp-runtime-zvec-0.1.162-cpu-r1-{target}.tar.gz")
+            automatic::select_runtime(&lock, target, &features, &variables(&[]))
+                .unwrap()
+                .0,
+            "cpu"
         );
-        assert_eq!(selected.targets[target].cmake["BUILD_SHARED_LIBS"], "OFF");
-        assert_eq!(selected.targets[target].cmake["GGML_CUDA"], "OFF");
-        assert_eq!(selected.targets[target].cmake["GGML_BACKEND_DL"], "OFF");
-        if let Some(default) = locks[0].targets.get(target) {
-            assert_eq!(
-                automatic::select_runtime(&locks, target, &default.features, &variables(&[]))
-                    .unwrap()
-                    .release,
-                locks[0].release
-            );
-        }
         for override_ in [
             ("LLAMA_BUILD_SHARED_LIBS", "1"),
             ("LLAMA_STATIC_CRT", "1"),
@@ -97,7 +90,7 @@ fn cpu_variants_select_before_download_and_keep_native_options_strict() {
             ("LLAMA_LIB_PROFILE", "Debug"),
         ] {
             assert!(
-                automatic::select_runtime(&locks, target, &features, &variables(&[override_]))
+                automatic::select_runtime(&lock, target, &features, &variables(&[override_]))
                     .is_none(),
                 "{override_:?}"
             );
@@ -106,72 +99,33 @@ fn cpu_variants_select_before_download_and_keep_native_options_strict() {
             let mut different = features.clone();
             different.insert(extra.into());
             assert!(
-                automatic::select_runtime(&locks, target, &different, &variables(&[])).is_none()
+                automatic::select_runtime(&lock, target, &different, &variables(&[])).is_none()
             );
         }
+        check_archive_cache(target, &lock.release, json!(["common"]));
     }
 }
 
 #[test]
-fn cpu_r2_keeps_default_targets_and_cuda_architectures_at_r1() {
-    let locks = [default_fixture().unwrap(), cpu_fixture().unwrap()];
-    assert_eq!(locks[0].release, "zvec-0.1.162-r1");
-    assert_eq!(locks[1].release, "zvec-0.1.162-cpu-r1");
-    assert_eq!(locks[0].targets.len(), 5);
-    for (target, bundle) in &locks[0].targets {
-        let selected =
-            automatic::select_runtime(&locks, target, &bundle.features, &variables(&[])).unwrap();
-        assert_eq!(selected.release, "zvec-0.1.162-r1");
-        if bundle.features.contains("cuda") {
-            let architectures = "75-real;80-real;86-real;89-real;90-real;90-virtual";
-            assert_eq!(bundle.cmake["CMAKE_CUDA_ARCHITECTURES"], architectures);
-            assert_eq!(
-                automatic::select_runtime(
-                    &locks,
-                    target,
-                    &bundle.features,
-                    &variables(&[("CMAKE_CUDA_ARCHITECTURES", architectures)])
-                )
-                .unwrap()
-                .release,
-                "zvec-0.1.162-r1"
-            );
-            assert!(automatic::select_runtime(
-                &locks,
-                target,
-                &bundle.features,
-                &variables(&[(
-                    "CMAKE_CUDA_ARCHITECTURES",
-                    "75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real"
-                )])
-            )
-            .is_none());
-        }
-    }
-    let arm = &locks[1].targets["aarch64-pc-windows-msvc"];
-    assert!(arm.cmake["CMAKE_CXX_FLAGS"]
-        .split_whitespace()
-        .any(|flag| flag == "/EHsc"));
-    assert_eq!(arm.cmake["GGML_METAL"], "OFF");
-    assert_eq!(arm.cmake["GGML_OPENMP"], "OFF");
-}
-
-#[test]
-fn cpu_archives_reuse_the_existing_verified_cache_path() {
-    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
-        check_archive_cache(target, "zvec-0.1.162-cpu-r1", json!(["common"]));
-    }
-    check_archive_cache(
-        "aarch64-pc-windows-msvc",
-        "zvec-0.1.162-cpu-r1",
-        json!(["common"]),
-    );
+fn ambiguous_variants_are_rejected() {
+    let mut value: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/runtime-lock.json")).unwrap();
+    value["targets"]["aarch64-apple-darwin"]["duplicate"] =
+        value["targets"]["aarch64-apple-darwin"]["metal"].clone();
+    let lock: automatic::RuntimeLock = serde_json::from_value(value).unwrap();
+    assert!(automatic::select_runtime(
+        &lock,
+        "aarch64-apple-darwin",
+        &mac_features(),
+        &variables(&[])
+    )
+    .is_none());
 }
 
 #[test]
 fn matching_defaults_and_explicit_native_options_reuse_sdk() {
     let lock = default_fixture().unwrap();
-    let bundle = &lock.targets["aarch64-apple-darwin"];
+    let bundle = &lock.targets["aarch64-apple-darwin"]["metal"];
     for values in [
         variables(&[]),
         variables(&[
@@ -189,7 +143,7 @@ fn matching_defaults_and_explicit_native_options_reuse_sdk() {
 #[test]
 fn native_parameter_and_feature_differences_select_source() {
     let lock = default_fixture().unwrap();
-    let bundle = &lock.targets["aarch64-apple-darwin"];
+    let bundle = &lock.targets["aarch64-apple-darwin"]["metal"];
     for values in [
         variables(&[("GGML_CPU_REPACK", "OFF")]),
         variables(&[("GGML_FUTURE_OPTION", "ON")]),
@@ -211,7 +165,7 @@ fn native_parameter_and_feature_differences_select_source() {
 #[test]
 fn rust_application_options_and_profiles_reuse_release_native_sdk() {
     let lock = default_fixture().unwrap();
-    let bundle = &lock.targets["aarch64-apple-darwin"];
+    let bundle = &lock.targets["aarch64-apple-darwin"]["metal"];
     let values = variables(&[
         ("CARGO_ENCODED_RUSTFLAGS", "-C\u{1f}debuginfo=1"),
         ("CARGO_PROFILE_RELEASE_DEBUG", "true"),
@@ -238,7 +192,7 @@ fn rust_application_options_and_profiles_reuse_release_native_sdk() {
 #[test]
 fn cuda_architecture_lists_and_upstream_boolean_semantics_are_preserved() {
     let lock = default_fixture().unwrap();
-    let bundle = &lock.targets["x86_64-pc-windows-msvc"];
+    let bundle = &lock.targets["x86_64-pc-windows-msvc"]["cuda"];
     assert!(automatic::mismatches(
         bundle,
         &bundle.features,
@@ -307,19 +261,24 @@ fn offline_cache_miss_and_bad_archive_do_not_silently_build_source() {
     let temporary = tempfile::tempdir().unwrap();
     let cache = temporary.path().join("cache");
     assert!(
-        automatic::acquire(&lock, "aarch64-apple-darwin", &cache, None, true)
+        automatic::acquire(&lock, "aarch64-apple-darwin", "metal", &cache, None, true)
             .unwrap_err()
             .to_string()
             .contains("not cached")
     );
     let archive = temporary.path().join("wrong.tgz");
     fs::write(&archive, b"not the pinned asset").unwrap();
-    assert!(
-        automatic::acquire(&lock, "aarch64-apple-darwin", &cache, Some(&archive), true)
-            .unwrap_err()
-            .to_string()
-            .contains("archive SHA-256 mismatch")
-    );
+    assert!(automatic::acquire(
+        &lock,
+        "aarch64-apple-darwin",
+        "metal",
+        &cache,
+        Some(&archive),
+        true
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("archive SHA-256 mismatch"));
 }
 
 #[test]
@@ -354,29 +313,25 @@ fn check_archive_cache(target: &str, release: &str, features: serde_json::Value)
         ],
     );
     let lock: automatic::RuntimeLock = serde_json::from_value(json!({
-        "release": release, "targets": {(target): {
+        "schema": 2, "release": release, "targets": {(target): {"test": {
             "archive": "fixture.tgz", "sha256": external::sha256(&archive).unwrap(),
             "manifest_sha256": external::sha256(&manifest_file).unwrap(),
             "features": features, "cmake": {}
-        }}
+        }}}
     }))
     .unwrap();
     let requested_features = serde_json::from_value(features).unwrap();
-    assert!(automatic::select_runtime(
-        std::slice::from_ref(&lock),
-        target,
-        &requested_features,
-        &variables(&[]),
-    )
-    .is_some());
+    assert!(
+        automatic::select_runtime(&lock, target, &requested_features, &variables(&[]),).is_some()
+    );
     let cache = temporary.path().join("cache");
-    let root = automatic::acquire(&lock, target, &cache, Some(&archive), true).unwrap();
+    let root = automatic::acquire(&lock, target, "test", &cache, Some(&archive), true).unwrap();
     assert_eq!(
         root,
-        automatic::acquire(&lock, target, &cache, None, true).unwrap()
+        automatic::acquire(&lock, target, "test", &cache, None, true).unwrap()
     );
     fs::write(root.join("bindings.rs"), b"corrupt").unwrap();
-    assert!(automatic::acquire(&lock, target, &cache, None, true).is_err());
+    assert!(automatic::acquire(&lock, target, "test", &cache, None, true).is_err());
     assert!(fs::read_dir(root.parent().unwrap())
         .unwrap()
         .all(|entry| !entry

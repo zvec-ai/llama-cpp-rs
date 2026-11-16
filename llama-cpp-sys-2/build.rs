@@ -424,7 +424,6 @@ fn main() {
     for path in [
         "automatic.rs",
         "runtime-lock.json",
-        "cpu-runtime-lock.json",
         "source.rs",
         "source-lock.json",
     ] {

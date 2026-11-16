@@ -48,6 +48,8 @@ def extract(archive, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True, choices=TARGETS)
+    parser.add_argument("--variant", required=True, choices=["cpu", "metal", "cuda"])
+    parser.add_argument("--lock", type=Path, default=ROOT / "llama-cpp-sys-2/build_support/runtime-lock.json")
     parser.add_argument("--sha256", required=True)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
@@ -57,12 +59,16 @@ def main():
     if output.exists():
         parser.error("--output must not already exist (no implicit cache replacement)")
     output.parent.mkdir(parents=True, exist_ok=True)
-    lock = json.loads((ROOT / "llama-cpp-sys-2/build_support/runtime-lock.json").read_text())
-    if args.target not in lock["targets"]:
-        parser.error("no verified SDK has been published and pinned for this target yet")
-    entry = lock["targets"][args.target]
+    lock = json.loads(args.lock.read_text())
+    if lock.get("schema") != 2:
+        parser.error("unsupported runtime lock schema")
+    if args.variant not in lock["targets"].get(args.target, {}):
+        parser.error("no verified SDK has been published and pinned for this target/variant yet")
+    entry = lock["targets"][args.target][args.variant]
+    if entry["sha256"] != args.sha256:
+        parser.error("--sha256 differs from the pinned runtime lock")
     name = entry["archive"]
-    release = entry.get("release", lock["release"])
+    release = lock["release"]
     url = f"https://github.com/zvec-ai/llama-cpp-rs/releases/download/{release}/{name}"
     with tempfile.TemporaryDirectory(prefix=".llama-runtime-", dir=output.parent) as temporary:
         temporary = Path(temporary)
@@ -75,8 +81,10 @@ def main():
         extracted.mkdir()
         extract(archive, extracted)
         manifest = verify(extracted)
-        if manifest["target"] != args.target:
-            raise RuntimeError("Archive target mismatch")
+        if (manifest["target"] != args.target or manifest["variant"] != args.variant
+                or manifest["release"] != release or manifest["features"] != entry["features"]
+                or digest(extracted / "manifest.json") != entry["manifest_sha256"]):
+            raise RuntimeError("Archive does not match the pinned target/variant/manifest")
         extracted.rename(output)
     print(f"LLAMA_CPP_BUILD_MODE=external\nLLAMA_CPP_RUNTIME_DIR={output}\n"
           f"LLAMA_CPP_RUNTIME_MANIFEST_SHA256={digest(output / 'manifest.json')}")

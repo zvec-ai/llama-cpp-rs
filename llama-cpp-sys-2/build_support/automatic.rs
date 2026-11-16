@@ -15,22 +15,13 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Deserialize)]
 pub struct RuntimeLock {
+    pub schema: u32,
     pub release: String,
-    pub targets: BTreeMap<String, Bundle>,
-}
-
-impl RuntimeLock {
-    pub fn release_for(&self, target: &str) -> Result<&str> {
-        let bundle = self.targets.get(target).ok_or("no SDK for target")?;
-        Ok(bundle.release.as_deref().unwrap_or(&self.release))
-    }
+    pub targets: BTreeMap<String, BTreeMap<String, Bundle>>,
 }
 
 #[derive(Deserialize)]
 pub struct Bundle {
-    // A platform-only release can promote verified archives byte-for-byte.
-    #[serde(default)]
-    pub release: Option<String>,
     pub archive: String,
     pub sha256: String,
     pub manifest_sha256: String,
@@ -39,24 +30,29 @@ pub struct Bundle {
 }
 
 pub fn runtime_lock() -> Result<RuntimeLock> {
-    Ok(serde_json::from_str(include_str!("runtime-lock.json"))?)
-}
-
-pub fn cpu_runtime_lock() -> Result<RuntimeLock> {
-    Ok(serde_json::from_str(include_str!("cpu-runtime-lock.json"))?)
+    let lock: RuntimeLock = serde_json::from_str(include_str!("runtime-lock.json"))?;
+    if lock.schema != 2 {
+        return Err("unsupported runtime lock schema".into());
+    }
+    Ok(lock)
 }
 
 pub fn select_runtime<'a>(
-    locks: &'a [RuntimeLock],
+    lock: &'a RuntimeLock,
     target: &str,
     features: &BTreeSet<String>,
     variables: &BTreeMap<String, String>,
-) -> Option<&'a RuntimeLock> {
-    locks.iter().find(|lock| {
-        lock.targets
-            .get(target)
-            .is_some_and(|bundle| mismatches(bundle, features, variables).is_empty())
-    })
+) -> Option<(&'a str, &'a Bundle)> {
+    let candidates = lock.targets.get(target)?;
+    let mut matches = candidates
+        .iter()
+        .filter(|(_, bundle)| mismatches(bundle, features, variables).is_empty());
+    let (variant, bundle) = matches.next()?;
+    // An ambiguous index must not silently select the first archive.
+    if matches.next().is_some() {
+        return None;
+    }
+    Some((variant.as_str(), bundle))
 }
 
 const SOURCE_OPTIONS: &[&str] = &[
@@ -130,11 +126,11 @@ const OTHER_OPTIONS: &[&str] = &[
 ];
 
 pub fn watch_environment() -> Result<()> {
-    let locks = [runtime_lock()?, cpu_runtime_lock()?];
+    let lock = runtime_lock()?;
     let mut names = BTreeSet::<String>::new();
     // Watch supported options even when unset, so adding an override on the
     // next Cargo invocation invalidates an already-cached prebuilt selection.
-    for entry in locks.iter().flat_map(|lock| lock.targets.values()) {
+    for entry in lock.targets.values().flat_map(|variants| variants.values()) {
         names.extend(entry.cmake.keys().cloned());
     }
     names.extend(
@@ -329,11 +325,16 @@ pub fn verify_bundle(root: &Path, bundle: &Bundle, target: &str) -> Result<()> {
 pub fn acquire(
     lock: &RuntimeLock,
     target: &str,
+    variant: &str,
     cache: &Path,
     archive: Option<&Path>,
     offline: bool,
 ) -> Result<PathBuf> {
-    let bundle = lock.targets.get(target).ok_or("no SDK for target")?;
+    let bundle = lock
+        .targets
+        .get(target)
+        .and_then(|variants| variants.get(variant))
+        .ok_or("no SDK for target/variant")?;
     let parent = cache.join(&bundle.sha256);
     fs::create_dir_all(&parent)?;
     let guard = OpenOptions::new()
@@ -358,7 +359,7 @@ pub fn acquire(
     let archive = if let Some(archive) = archive {
         archive
     } else {
-        let release = lock.release_for(target)?;
+        let release = &lock.release;
         let url = format!(
             "https://github.com/zvec-ai/llama-cpp-rs/releases/download/{}/{}",
             release, bundle.archive
@@ -422,20 +423,24 @@ pub fn offline() -> bool {
 }
 
 pub fn try_build(prebuilt_only: bool) -> Result<bool> {
-    let locks = [runtime_lock()?, cpu_runtime_lock()?];
+    let lock = runtime_lock()?;
     let target = env::var("TARGET")?;
     let variables = env::vars().collect();
     let features = external::enabled_features();
-    let Some(lock) = select_runtime(&locks, &target, &features, &variables) else {
-        let reasons: Vec<_> = locks
-            .iter()
-            .flat_map(|lock| {
-                lock.targets.get(&target).map_or_else(
-                    || vec![format!("no pinned SDK for {target} in {}", lock.release)],
-                    |bundle| mismatches(bundle, &features, &variables),
-                )
-            })
-            .collect();
+    let Some((variant, bundle)) = select_runtime(&lock, &target, &features, &variables) else {
+        let reasons = lock.targets.get(&target).map_or_else(
+            || vec![format!("no pinned SDK for {target} in {}", lock.release)],
+            |variants| {
+                variants
+                    .iter()
+                    .flat_map(|(variant, bundle)| {
+                        mismatches(bundle, &features, &variables)
+                            .into_iter()
+                            .map(move |reason| format!("{variant}: {reason}"))
+                    })
+                    .collect()
+            },
+        );
         if prebuilt_only {
             return Err(format!("prebuilt mode is incompatible: {}", reasons.join("; ")).into());
         }
@@ -450,13 +455,14 @@ pub fn try_build(prebuilt_only: bool) -> Result<bool> {
         println!("cargo:rerun-if-changed={}", archive.display());
     }
     let root = acquire(
-        lock,
+        &lock,
         &target,
+        variant,
         &cache_directory()?,
         archive.as_deref(),
         offline(),
     )?;
-    external::build_verified(&root, &lock.targets[&target].manifest_sha256)?;
+    external::build_verified(&root, &bundle.manifest_sha256)?;
     Ok(true)
 }
 
