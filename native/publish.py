@@ -93,6 +93,8 @@ def prepare(directory, evidence, packaging_commit, run_url):
         "- CPU: macOS x64, Linux x64/ARM64, Windows x64/ARM64.\n"
         "- Metal: macOS ARM64 (CPU + Metal).\n"
         "- CUDA: Linux x64 and Windows x64 (CPU + CUDA 13.1 primary + CUDA 12.4 fallback).\n"
+        f"- macOS deployment targets: ARM64 {targets['aarch64-apple-darwin']['metal']['cmake']['MACOSX_DEPLOYMENT_TARGET']}, "
+        f"x64 {targets['x86_64-apple-darwin']['cpu']['cmake']['MACOSX_DEPLOYMENT_TARGET']}.\n"
         "- Linux minimum glibc: 2.28. NVIDIA runtime/driver libraries are supplied by the host.\n\n"
         f"Packaging commit: `{packaging_commit}`. Original native build commits are preserved in the manifests.\n\n"
         f"See `validation-report.md`, `SHA256SUMS` and [workflow evidence]({run_url}). "

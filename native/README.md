@@ -13,12 +13,12 @@ is not part of that production baseline and is not included.
 
 ## Upgrade state
 
-The unified embedded runtime lock intentionally has no targets until publication. Old 0.1.154
-archives are not ABI-compatible and must not be reused. Until new archives are
-verified, published and pinned, `auto` builds from the locked source and
-`prebuilt` fails with an explicit missing-SDK error. Local SDKs can be consumed
-through `external`. Test fixtures are synthetic selection metadata, not
-downloadable production artifacts.
+[zvec-0.1.162-r1](https://github.com/zvec-ai/llama-cpp-rs/releases/tag/zvec-0.1.162-r1)
+is published as one pre-release with all eight SDK configurations. The embedded
+`runtime-lock.json` matches the published index byte for byte and pins every
+archive and manifest digest. `auto` downloads a matching SDK; `prebuilt` requires
+one. Old 0.1.154 archives are not ABI-compatible and must not be reused.
+Test fixtures remain synthetic metadata, not downloadable production artifacts.
 
 No zg dependency or code is changed. No crates.io package is published.
 Dispatch `native-release.yml` to validate all eight SDKs. Publishing requires
@@ -59,6 +59,9 @@ Linux x64/ARM64 and Windows x64/ARM64; CPU+Metal on macOS ARM64; CPU+CUDA on
 Linux x64 and Windows x64. Vulkan/custom features retain source-build support.
 Each archive is named `llama-cpp-runtime-<release>-<target>-<cpu|metal|cuda>.tar.gz`,
 with a matching `.manifest.json`. macOS Intel CPU explicitly disables Metal.
+The published macOS SDK deployment targets are 15.5 for ARM64 and 14.0 for x64.
+An explicit different `MACOSX_DEPLOYMENT_TARGET` selects a source build in
+`auto` mode and is rejected in `prebuilt` mode.
 
 Linux builds and runtime acceptance use glibc 2.28 environments. The ABI ceiling
 is GLIBC 2.28, GLIBCXX 3.4.25 and CXXABI 1.3.11. `LLAMA_SUBPROCESS=OFF` avoids
