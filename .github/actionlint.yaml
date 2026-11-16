@@ -1,0 +1,5 @@
+self-hosted-runner:
+  labels:
+    - gpu-linux-t4
+    - gpu-windows-t4
+    - windows-11-vs2026-arm

@@ -13,7 +13,7 @@ is not part of that production baseline and is not included.
 
 ## Upgrade state
 
-The two embedded runtime locks intentionally have no targets. Old 0.1.154
+The unified embedded runtime lock intentionally has no targets until publication. Old 0.1.154
 archives are not ABI-compatible and must not be reused. Until new archives are
 verified, published and pinned, `auto` builds from the locked source and
 `prebuilt` fails with an explicit missing-SDK error. Local SDKs can be consumed
@@ -21,9 +21,9 @@ through `external`. Test fixtures are synthetic selection metadata, not
 downloadable production artifacts.
 
 No zg dependency or code is changed. No crates.io package is published.
-Pushing the upgrade branch runs native validation without publishing a Release.
-Publishing additionally requires explicit `publish=true` on a
-`prebuilt/0.1.162*` release branch and all platform/GPU gates to pass.
+Dispatch `native-release.yml` to validate all eight SDKs. Publishing requires
+explicit `publish=true` on `codex/upstream-main-sdk-refresh` and all platform/GPU
+gates to pass. Partial Linux-only runs cannot publish.
 
 ## Consumer modes
 
@@ -54,9 +54,11 @@ regeneration. Consumer builds use upstream's already generated bindings.
 
 ## Platforms and compatibility
 
-The default matrix builds macOS ARM64/Intel, Linux ARM64 CPU, and Linux/Windows
-x64 CUDA SDKs. A separate `variant=cpu` matrix covers Linux x64, Windows x64,
-and Windows ARM64 CPU SDKs. Vulkan/custom features retain source-build support.
+One matrix builds eight explicit target/variant combinations: CPU on macOS x64,
+Linux x64/ARM64 and Windows x64/ARM64; CPU+Metal on macOS ARM64; CPU+CUDA on
+Linux x64 and Windows x64. Vulkan/custom features retain source-build support.
+Each archive is named `llama-cpp-runtime-<release>-<target>-<cpu|metal|cuda>.tar.gz`,
+with a matching `.manifest.json`. macOS Intel CPU explicitly disables Metal.
 
 Linux builds and runtime acceptance use glibc 2.28 environments. The ABI ceiling
 is GLIBC 2.28, GLIBCXX 3.4.25 and CXXABI 1.3.11. `LLAMA_SUBPROCESS=OFF` avoids
@@ -72,7 +74,7 @@ The completed checks for this refresh are recorded in [VALIDATION.md](VALIDATION
 ```sh
 cargo fmt --all --check
 cargo test --locked -p native-contract-tests
-python3 native/runtime.py primary --target aarch64-apple-darwin
+python3 native/runtime.py primary --target aarch64-apple-darwin --variant metal
 python3 native/runtime.py package
 python3 native/unpack.py --artifacts target/dist --output target/relocated/bundle
 python3 native/runtime.py external --bundle target/relocated/bundle --target-dir target/external-consumer
@@ -94,11 +96,26 @@ checks CPU inference without NVIDIA libraries and audits every shared library
 plus a separately linked consumer on glibc 2.28.
 
 After all platform gates pass, prepare metadata with
-`python3 native/publish.py --assets <merged-artifacts> --variant <default|cpu> --prepare-only`.
-Publish the exact verified archives under new immutable release names, then
-import the generated locks. Both default and CPU locks include features,
-configuration and archive/manifest hashes. Consumers pin a fork commit;
-they do not trust a changing remote index.
+`python3 native/publish.py --assets <merged-artifacts> --evidence <evidence-artifacts> --prepare-only`.
+The single `runtime-lock.json` uses schema 2: `targets[target][variant]` contains
+features, native configuration, and archive/manifest hashes. Selection uses
+Cargo's resolved features, never GPU probing or a changing remote index.
+
+The release contains 19 assets: eight archives, eight manifests, `runtime-lock.json`,
+`SHA256SUMS` (hashing the other 18 assets), and `validation-report.md`.
+The publisher requires evidence for the final manifests, creates a draft,
+downloads and verifies every uploaded asset, then publishes a pre-release.
+It refuses to modify an existing release. After publication, CI downloads all
+19 assets anonymously and validates all eight prebuilt consumers from a cold
+SDK cache, then offline, with both models and platform audits. Import the exact
+published index into the fork after those checks pass.
+
+Optional `reuse_runs` accepts successful native workflow run IDs. Repackaging
+verifies the GitHub artifact digest, ABI, configuration and every payload hash;
+`source_commit` remains the original native build, while `packaging_commit` and
+`provenance` record the repack. Final archives still undergo all validation gates.
+macOS Intel always rebuilds, because the earlier default SDK implicitly enabled
+Metal despite advertising only the common Cargo feature.
 
 For later upstream refreshes, start at an explicitly recorded upstream SHA,
 retain its bindings and safe API, replay the small build integrations, update

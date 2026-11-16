@@ -1,17 +1,14 @@
 name: Native runtime release
 
 on:
-  push:
-    branches: [codex/upstream-main-sdk-refresh]
   workflow_dispatch:
     inputs:
-      variant:
-        description: Original five SDKs, or the three CPU-only SDKs
-        type: choice
-        options: [default, cpu]
-        default: default
+      reuse_runs:
+        description: Optional comma-separated successful native run IDs to repackage (Intel macOS always rebuilds)
+        type: string
+        default: ''
       publish:
-        description: Publish verified artifacts (prebuilt release branches only)
+        description: Publish one unified pre-release after every validation gate
         type: boolean
         default: false
       linux_only:
@@ -21,9 +18,10 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: native-runtime-${{ github.ref }}-${{ (inputs.variant || 'default') }}
+  group: native-runtime-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -31,23 +29,14 @@ jobs:
     if: github.repository == 'zvec-ai/llama-cpp-rs'
     env:
       DOCKER_BUILDKIT: '1'
+      REUSE_RUNS: ${{ inputs.reuse_runs }}
     strategy:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(inputs.linux_only && ((inputs.variant || 'default') == 'cpu' &&
-          '[{"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04"}]' ||
-          '[{"target":"aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm"},
-          {"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04"}]') || (inputs.variant || 'default') == 'cpu' &&
-          '[{"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04"},
-          {"target":"x86_64-pc-windows-msvc","runner":"windows-2022"},
-          {"target":"aarch64-pc-windows-msvc","runner":"windows-11-vs2026-arm"}]' ||
-          '[{"target":"aarch64-apple-darwin","runner":"macos-15"},
-          {"target":"x86_64-apple-darwin","runner":"macos-15-intel"},
-          {"target":"aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm"},
-          {"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04"},
-          {"target":"x86_64-pc-windows-msvc","runner":"windows-2022"}]') }}
-    name: Build and CPU test ${{ matrix.target }}
+          ${{ fromJSON(inputs.linux_only && '[{"target":"aarch64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04-arm","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cuda","runner":"ubuntu-24.04","reuse":true}]' ||
+          '[{"target":"aarch64-apple-darwin","variant":"metal","runner":"macos-15-xlarge","reuse":true},{"target":"x86_64-apple-darwin","variant":"cpu","runner":"macos-15-intel","reuse":false},{"target":"aarch64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04-arm","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cuda","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cpu","runner":"windows-2022","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cuda","runner":"windows-2022","reuse":true},{"target":"aarch64-pc-windows-msvc","variant":"cpu","runner":"windows-11-vs2026-arm","reuse":true}]') }}
+    name: SDK ${{ matrix.target }} / ${{ matrix.variant }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:
@@ -76,7 +65,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y binutils
       - name: Install MSVC 14.38 for the CUDA 12 fallback
-        if: runner.os == 'Windows' && (inputs.variant || 'default') != 'cpu'
+        if: runner.os == 'Windows' && matrix.variant == 'cuda' && !(inputs.reuse_runs && matrix.reuse)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -100,14 +89,14 @@ jobs:
         with:
           arch: arm64
       - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
-        if: runner.os == 'Windows' && (inputs.variant || 'default') != 'cpu'
+        if: runner.os == 'Windows' && matrix.variant == 'cuda' && !(inputs.reuse_runs && matrix.reuse)
         with:
           cuda: '13.1.1'
           method: network
           sub-packages: '["nvcc", "nvvm", "crt", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
           use-local-cache: true
       - name: Configure Windows CUDA 13 DLL lookup
-        if: runner.os == 'Windows' && (inputs.variant || 'default') != 'cpu'
+        if: runner.os == 'Windows' && matrix.variant == 'cuda' && !(inputs.reuse_runs && matrix.reuse)
         shell: python
         run: |
           import os
@@ -117,13 +106,14 @@ jobs:
           with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as output:
               output.write('\n'.join(paths) + '\n')
       - uses: actions/cache/restore@v5
+        if: ${{ !(inputs.reuse_runs && matrix.reuse) }}
         id: native-cache
         with:
           path: |
             ~/.cargo/registry/
             target/native-build/
-          key: ${{ (inputs.variant || 'default') == 'cpu' && 'native-cpu-v3' || 'native-v3' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'native/Dockerfile', 'native/build-requirements.txt', 'native/*.cmake', 'native/*.sh') }}-${{ github.sha }}
-          restore-keys: ${{ (inputs.variant || 'default') == 'cpu' && 'native-cpu-v3' || 'native-v3' }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'native/Dockerfile', 'native/build-requirements.txt', 'native/*.cmake', 'native/*.sh') }}-
+          key: native-v4-${{ matrix.variant }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'native/Dockerfile', 'native/build-requirements.txt', 'native/*.cmake', 'native/*.sh') }}-${{ github.sha }}
+          restore-keys: native-v4-${{ matrix.variant }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'native/Dockerfile', 'native/build-requirements.txt', 'native/*.cmake', 'native/*.sh') }}-
       - name: Test packaging contract
         run: python -m unittest discover -s native -p 'test_*.py' -v
       - name: Test SDK selection, ABI checks, and cache failures
@@ -131,29 +121,41 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all --check
 
+      - name: Repackage verified native payload and preserve build provenance
+        if: inputs.reuse_runs && matrix.reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import os, subprocess
+          subprocess.run(["python", "native/reuse.py", "--runs", os.environ["REUSE_RUNS"],
+                          "--target", "${{ matrix.target }}", "--variant", "${{ matrix.variant }}"], check=True)
+
       - name: Build primary through the upstream Cargo build script
-        if: runner.os != 'Linux'
-        run: python native/runtime.py primary --target ${{ matrix.target }} --variant ${{ (inputs.variant || 'default') }}
+        if: runner.os != 'Linux' && !(inputs.reuse_runs && matrix.reuse)
+        run: python native/runtime.py primary --target ${{ matrix.target }} --variant ${{ matrix.variant }}
       - name: Build Linux SDK and consumer images on glibc 2.28
         if: runner.os == 'Linux'
         env:
-          BUILDER: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && (inputs.variant || 'default') != 'cpu' && 'cuda13' || 'cpu' }}
+          BUILDER: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && matrix.variant == 'cuda' && 'cuda13' || 'cpu' }}
         run: |
           docker build --target cpu -f native/Dockerfile -t llama-native-cpu .
-          docker build --target "$BUILDER" -f native/Dockerfile -t llama-native-primary .
+          if [ -z "$REUSE_RUNS" ]; then
+            docker build --target "$BUILDER" -f native/Dockerfile -t llama-native-primary .
+          fi
           docker build --target runtime-cpu -f native/Dockerfile -t llama-native-runtime-cpu .
           docker run --rm -v "$GITHUB_WORKSPACE:/work" \
             llama-native-cpu python3 -m unittest discover -s native -p 'test_*.py' -v
       - name: Build Linux primary against glibc 2.28
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !(inputs.reuse_runs && matrix.reuse)
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CARGO_BUILD_JOBS -e CMAKE_BUILD_PARALLEL_LEVEL \
             llama-native-primary bash -euc '
               test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
               python3 native/runtime.py primary --target "$1" --variant "$2"
-            ' bash '${{ matrix.target }}' '${{ (inputs.variant || 'default') }}'
+            ' bash '${{ matrix.target }}' '${{ matrix.variant }}'
       - name: Build Linux CUDA 12.4 fallback only
-        if: matrix.target == 'x86_64-unknown-linux-gnu' && (inputs.variant || 'default') != 'cpu'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.variant == 'cuda' && !(inputs.reuse_runs && matrix.reuse)
         run: |
           docker build --target cuda12 -f native/Dockerfile -t llama-native-cuda12 .
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CMAKE_BUILD_PARALLEL_LEVEL \
@@ -165,23 +167,23 @@ jobs:
         if: always() && runner.os == 'Linux'
         run: sudo chown -R "$(id -u):$(id -g)" target
       - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
-        if: runner.os == 'Windows' && (inputs.variant || 'default') != 'cpu'
+        if: runner.os == 'Windows' && matrix.variant == 'cuda' && !(inputs.reuse_runs && matrix.reuse)
         with:
           cuda: '12.4.1'
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust"]'
           use-local-cache: true
       - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows' && (inputs.variant || 'default') != 'cpu'
+        if: runner.os == 'Windows' && matrix.variant == 'cuda' && !(inputs.reuse_runs && matrix.reuse)
         with:
           arch: x64
           vsversion: '2022'
           toolset: '14.38'
       - name: Build Windows CUDA 12.4 fallback only
-        if: runner.os == 'Windows' && (inputs.variant || 'default') != 'cpu'
+        if: runner.os == 'Windows' && matrix.variant == 'cuda' && !(inputs.reuse_runs && matrix.reuse)
         run: python native/runtime.py fallback --cuda-root "$env:CUDA_PATH"
       - uses: actions/cache/save@v5
-        if: always() && steps.native-cache.outputs.cache-primary-key != '' && steps.native-cache.outputs.cache-hit != 'true'
+        if: always() && steps.native-cache.outputs.cache-primary-key != '' && steps.native-cache.outputs.cache-hit != 'true' && !(inputs.reuse_runs && matrix.reuse)
         with:
           path: |
             ~/.cargo/registry/
@@ -216,7 +218,7 @@ jobs:
       - name: Real Linux CPU inference on clean glibc 2.28
         if: runner.os == 'Linux'
         env:
-          CUDA_SDK: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && (inputs.variant || 'default') != 'cpu' && '1' || '0' }}
+          CUDA_SDK: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && matrix.variant == 'cuda' && '1' || '0' }}
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CUDA_SDK \
             llama-native-runtime-cpu bash -euc '
@@ -228,17 +230,22 @@ jobs:
             python3 native/e2e.py --bundle target/relocated/bundle --mode cpu --model-kind embeddinggemma2 --logs target/evidence/gemma2
           '
           sudo chown -R "$(id -u):$(id -g)" target
+      - name: Actual Metal offload from the final archive
+        if: matrix.variant == 'metal'
+        run: |
+          python native/e2e.py --bundle target/relocated/bundle --mode metal --logs target/evidence/metal
+          python native/e2e.py --bundle target/relocated/bundle --mode metal --model-kind embeddinggemma2 --logs target/evidence/gemma2-metal
       - name: Audit dynamic dependencies and Linux glibc 2.28 ceiling
         run: python native/audit.py --bundle target/relocated/bundle --logs target/evidence
       - uses: actions/upload-artifact@v7
         with:
-          name: native-${{ matrix.target }}
+          name: native-${{ matrix.target }}-${{ matrix.variant }}
           path: target/dist/*
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@v7
-        if: (inputs.variant || 'default') != 'cpu' && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc')
+        if: matrix.variant == 'cuda' && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc')
         with:
           name: probe-${{ matrix.target }}
           path: target/relocated/probe/*
@@ -246,13 +253,12 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: evidence-${{ matrix.target }}
+          name: evidence-${{ matrix.target }}-${{ matrix.variant }}
           path: target/evidence/
           if-no-files-found: warn
 
   cuda-linux:
     needs: build
-    if: (inputs.variant || 'default') != 'cpu'
     env:
       DOCKER_BUILDKIT: '1'
     runs-on:
@@ -268,7 +274,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@v8
         with:
-          name: native-x86_64-unknown-linux-gnu
+          name: native-x86_64-unknown-linux-gnu-cuda
           path: artifacts
       - uses: actions/download-artifact@v8
         with:
@@ -299,7 +305,7 @@ jobs:
 
   cuda-windows:
     needs: build
-    if: (inputs.variant || 'default') != 'cpu' && !inputs.linux_only
+    if: '!inputs.linux_only'
     runs-on:
       group: gpu-runners
       labels: gpu-windows-t4
@@ -316,7 +322,7 @@ jobs:
         run: ./native/prepare-windows-driver.ps1 -DriverOnly
       - uses: actions/download-artifact@v8
         with:
-          name: native-x86_64-pc-windows-msvc
+          name: native-x86_64-pc-windows-msvc-cuda
           path: artifacts
       - uses: actions/download-artifact@v8
         with:
@@ -365,7 +371,7 @@ jobs:
           path: target/gpu-evidence/
 
   metadata:
-    needs: build
+    needs: [build, cuda-linux, cuda-windows]
     if: '!inputs.linux_only'
     runs-on: ubuntu-24.04
     steps:
@@ -377,25 +383,30 @@ jobs:
           pattern: native-*
           path: release
           merge-multiple: true
-      - name: Verify every SDK and prepare consistent cross-platform pins
-        run: python3 native/publish.py --assets release --variant ${{ (inputs.variant || 'default') }} --prepare-only
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: '*evidence-*'
+          path: evidence
+      - name: Require all eight SDKs and their exact-archive evidence
+        run: python3 native/publish.py --assets release --evidence evidence --prepare-only
       - uses: actions/upload-artifact@v7
         with:
           name: release-metadata
           path: |
-            release/*runtime-lock.json
+            release/runtime-lock.json
             release/SHA256SUMS
+            release/validation-report.md
             release/release-notes.md
 
   release:
     needs: [build, metadata, cuda-linux, cuda-windows]
     if: >-
-      always() && !cancelled() && !inputs.linux_only && inputs.publish && startsWith(github.ref, 'refs/heads/prebuilt/0.1.162') &&
-      needs.build.result == 'success' && needs.metadata.result == 'success' &&
-      ((inputs.variant || 'default') == 'cpu' || (needs.cuda-linux.result == 'success' && needs.cuda-windows.result == 'success'))
+      !inputs.linux_only && inputs.publish && github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/codex/upstream-main-sdk-refresh'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -405,15 +416,89 @@ jobs:
           pattern: native-*
           path: release
           merge-multiple: true
-      - name: Publish only after all platform and GPU checks pass
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: '*evidence-*'
+          path: evidence
+      - name: Stage draft, verify uploaded bytes, then publish pre-release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 native/publish.py --assets release --variant ${{ (inputs.variant || 'default') }}
-      - uses: actions/upload-artifact@v7
-        if: (inputs.variant || 'default') == 'cpu'
+        run: python3 native/publish.py --assets release --evidence evidence
+      - name: Verify all 19 public assets without authentication
+        run: python3 native/verify_downloads.py --expected release --output target/public-downloads
+
+  download-consumers:
+    needs: release
+    name: Public prebuilt ${{ matrix.target }} / ${{ matrix.variant }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON('[{"target":"aarch64-apple-darwin","variant":"metal","runner":"macos-15-xlarge","reuse":true},{"target":"x86_64-apple-darwin","variant":"cpu","runner":"macos-15-intel","reuse":false},{"target":"aarch64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04-arm","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cuda","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cpu","runner":"windows-2022","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cuda","runner":"windows-2022","reuse":true},{"target":"aarch64-pc-windows-msvc","variant":"cpu","runner":"windows-11-vs2026-arm","reuse":true}]') }}
+    env:
+      DOCKER_BUILDKIT: '1'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v6
         with:
-          name: cpu-release-metadata
-          path: |
-            release/cpu-runtime-lock.json
-            release/SHA256SUMS
-            release/release-notes.md
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          toolchain: '1.98.0'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 'arm64' || 'x64' }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-metadata
+          path: metadata
+      - name: Install exact published pins and fetch public SDK
+        shell: python
+        run: |
+          import json, shutil, subprocess
+          from pathlib import Path
+          lock = Path('metadata/runtime-lock.json')
+          shutil.copyfile(lock, 'llama-cpp-sys-2/build_support/runtime-lock.json')
+          entry = json.loads(lock.read_text())['targets']['${{ matrix.target }}']['${{ matrix.variant }}']
+          subprocess.run(['python', 'native/fetch.py', '--target', '${{ matrix.target }}',
+                          '--variant', '${{ matrix.variant }}', '--sha256', entry['sha256'],
+                          '--lock', str(lock), '--output', 'target/relocated/bundle'], check=True)
+      - name: Build public prebuilt consumer with cold cache and reuse offline
+        if: runner.os != 'Linux'
+        run: python native/runtime.py prebuilt --bundle target/relocated/bundle --lock metadata/runtime-lock.json --target-dir target/public-consumer
+      - name: Build public prebuilt Linux consumer on glibc 2.28
+        if: runner.os == 'Linux'
+        run: |
+          docker build --target cpu -f native/Dockerfile -t llama-native-cpu .
+          docker build --target runtime-cpu -f native/Dockerfile -t llama-native-runtime-cpu .
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -e CARGO_BUILD_JOBS llama-native-cpu \
+            python3 native/runtime.py prebuilt --bundle target/relocated/bundle --lock metadata/runtime-lock.json --target-dir target/public-consumer
+          sudo chown -R "$(id -u):$(id -g)" target
+      - uses: actions/cache@v5
+        with:
+          path: target/models/
+          key: native-embeddinggemma-models-b5ce9d77-2188ac1d
+      - name: Run both models from downloaded SDK
+        if: runner.os != 'Linux'
+        run: |
+          python native/e2e.py --bundle target/relocated/bundle --mode cpu
+          python native/e2e.py --bundle target/relocated/bundle --mode cpu --model-kind embeddinggemma2 --logs target/evidence/gemma2
+      - name: Run both models on clean glibc 2.28
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" llama-native-runtime-cpu bash -euc '
+            python3 native/e2e.py --bundle target/relocated/bundle --mode cpu
+            python3 native/e2e.py --bundle target/relocated/bundle --mode cpu --model-kind embeddinggemma2 --logs target/evidence/gemma2
+          '
+          sudo chown -R "$(id -u):$(id -g)" target
+      - name: Audit the public SDK and consumer
+        run: python native/audit.py --bundle target/relocated/bundle --logs target/evidence
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: public-evidence-${{ matrix.target }}-${{ matrix.variant }}
+          path: target/evidence/
