@@ -7,6 +7,10 @@ on:
         description: Optional comma-separated successful native run IDs to repackage (Intel macOS always rebuilds)
         type: string
         default: ''
+      metal_runner:
+        description: Runner label with an Apple GPU (may be an ephemeral self-hosted runner)
+        type: string
+        default: macos-15-xlarge
       publish:
         description: Publish one unified pre-release after every validation gate
         type: boolean
@@ -35,9 +39,9 @@ jobs:
       matrix:
         include: >-
           ${{ fromJSON(inputs.linux_only && '[{"target":"aarch64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04-arm","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cuda","runner":"ubuntu-24.04","reuse":true}]' ||
-          '[{"target":"aarch64-apple-darwin","variant":"metal","runner":"macos-15-xlarge","reuse":true},{"target":"x86_64-apple-darwin","variant":"cpu","runner":"macos-15-intel","reuse":false},{"target":"aarch64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04-arm","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cuda","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cpu","runner":"windows-2022","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cuda","runner":"windows-2022","reuse":true},{"target":"aarch64-pc-windows-msvc","variant":"cpu","runner":"windows-11-vs2026-arm","reuse":true}]') }}
+          '[{"target":"aarch64-apple-darwin","variant":"metal","runner":"macos-15","reuse":true},{"target":"x86_64-apple-darwin","variant":"cpu","runner":"macos-15-intel","reuse":false},{"target":"aarch64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04-arm","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cuda","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cpu","runner":"windows-2022","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cuda","runner":"windows-2022","reuse":true},{"target":"aarch64-pc-windows-msvc","variant":"cpu","runner":"windows-11-vs2026-arm","reuse":true}]') }}
     name: SDK ${{ matrix.target }} / ${{ matrix.variant }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.variant == 'metal' && (inputs.metal_runner || 'macos-15-xlarge') || matrix.runner }}
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v6
@@ -434,7 +438,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON('[{"target":"aarch64-apple-darwin","variant":"metal","runner":"macos-15-xlarge","reuse":true},{"target":"x86_64-apple-darwin","variant":"cpu","runner":"macos-15-intel","reuse":false},{"target":"aarch64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04-arm","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cuda","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cpu","runner":"windows-2022","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cuda","runner":"windows-2022","reuse":true},{"target":"aarch64-pc-windows-msvc","variant":"cpu","runner":"windows-11-vs2026-arm","reuse":true}]') }}
+        include: ${{ fromJSON('[{"target":"aarch64-apple-darwin","variant":"metal","runner":"macos-15","reuse":true},{"target":"x86_64-apple-darwin","variant":"cpu","runner":"macos-15-intel","reuse":false},{"target":"aarch64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04-arm","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cpu","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-unknown-linux-gnu","variant":"cuda","runner":"ubuntu-24.04","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cpu","runner":"windows-2022","reuse":true},{"target":"x86_64-pc-windows-msvc","variant":"cuda","runner":"windows-2022","reuse":true},{"target":"aarch64-pc-windows-msvc","variant":"cpu","runner":"windows-11-vs2026-arm","reuse":true}]') }}
     env:
       DOCKER_BUILDKIT: '1'
       CARGO_BUILD_JOBS: '4'
