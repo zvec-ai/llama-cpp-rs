@@ -51,8 +51,25 @@ jobs:
           # Same-user ephemeral checkouts need no global Git configuration.
           set-safe-directory: ${{ runner.environment == 'github-hosted' }}
       - uses: actions/setup-python@v6
+        if: runner.environment == 'github-hosted'
         with:
           python-version: '3.12'
+      - name: Use preinstalled Python on an ephemeral Apple GPU runner
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          python3.12 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          assert sys.version_info[:2] == (3, 12)
+          binaries = Path(os.environ['RUNNER_TEMP']) / 'sdk-python'
+          binaries.mkdir()
+          for name in ('python', 'python3'):
+              (binaries / name).symlink_to(Path(sys.executable).resolve())
+          with open(os.environ['GITHUB_PATH'], 'a') as output:
+              output.write(str(binaries) + '\n')
+          print(sys.version)
+          PY
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
         with:
           toolchain: '1.98.0'

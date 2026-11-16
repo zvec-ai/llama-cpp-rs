@@ -117,6 +117,11 @@ verifies the GitHub artifact digest, ABI, configuration and every payload hash;
 macOS Intel always rebuilds, because the earlier default SDK implicitly enabled
 Metal despite advertising only the common Cargo feature.
 
+Metal acceptance requires an Apple GPU. `metal_runner` defaults to the hosted
+`macos-15-xlarge` label; a repository-scoped ephemeral runner label may be used
+when hosted GPU capacity/billing is unavailable. Such runners need Python 3.12,
+Git, Rust, Node and the macOS linker preinstalled, and execute the same checks.
+
 For later upstream refreshes, start at an explicitly recorded upstream SHA,
 retain its bindings and safe API, replay the small build integrations, update
 source/archive/tree hashes, clear incompatible SDK pins, and repeat native
